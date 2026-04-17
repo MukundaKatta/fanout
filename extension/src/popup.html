@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Fanout</title>
+    <style>
+      body { font-family: system-ui, sans-serif; width: 320px; padding: 12px; }
+      h1 { margin: 0 0 8px 0; font-size: 16px; }
+      label { display: block; font-size: 12px; margin-top: 8px; }
+      input[type="text"], textarea { width: 100%; padding: 6px; box-sizing: border-box; font-family: monospace; font-size: 11px; }
+      textarea { height: 60px; resize: vertical; }
+      button { margin-top: 10px; padding: 6px 10px; }
+      .row { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+      .muted { color: #888; font-size: 11px; margin-top: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>Fanout</h1>
+    <label>
+      Backend URL
+      <input id="apiUrl" type="text" placeholder="http://localhost:8000" />
+    </label>
+    <label>
+      Supabase JWT (paste from web app or leave blank for dev mode)
+      <textarea id="jwt" placeholder="eyJhbGciOiJIUzI1NiIs..."></textarea>
+    </label>
+    <div class="row">
+      <input id="enabled" type="checkbox" />
+      <label for="enabled" style="margin:0">Enabled (poll every 30s)</label>
+    </div>
+    <button id="save">Save</button>
+    <button id="pollNow">Poll now</button>
+    <p id="status" class="muted"></p>
+    <script src="popup.js"></script>
+  </body>
+</html>
