@@ -1,0 +1,68 @@
+name: ✨ Feature request
+description: Suggest a new capability or improvement.
+title: "[feat] "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing something! The request is strongest when it starts with a *problem*, not a solution — that gives us room to consider alternatives.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that Fanout makes harder than it should?
+      placeholder: "I want to promote a product launch across Indie Hackers, but there's no channel for it yet."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Your proposal
+      description: What should Fanout do? If a UI change, describe what the user sees.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you've tried, or other tools that solve it differently.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area?
+      multiple: true
+      options:
+        - New channel
+        - Agent pipeline / prompting
+        - Web UI
+        - Browser extension
+        - Backend / API
+        - Auth / billing
+        - Docs
+        - Developer experience
+    validations:
+      required: true
+
+  - type: dropdown
+    id: willingness
+    attributes:
+      label: Would you like to send a PR?
+      options:
+        - "Yes, happy to work on this"
+        - "Maybe, with guidance"
+        - "No, just proposing"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and discussions
+          required: true

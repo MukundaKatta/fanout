@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+
+contact_links:
+  - name: 💬 Questions and discussion
+    url: https://github.com/MukundaKatta/fanout/discussions
+    about: For how-to questions, ideas, and general discussion, use Discussions.
+  - name: 🔒 Security vulnerability
+    url: https://github.com/MukundaKatta/fanout/security/advisories/new
+    about: Do not open a public issue. Use a private security advisory instead.

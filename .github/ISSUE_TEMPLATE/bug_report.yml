@@ -1,0 +1,84 @@
+name: 🐛 Bug report
+description: Something in Fanout doesn't work the way it should.
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! A focused repro is the single biggest thing that gets a fix landed fast.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: A concise description of the bug. One paragraph is plenty.
+      placeholder: "When I click Generate with LinkedIn selected, the drafts panel flashes then disappears."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      placeholder: "Five drafts stay rendered so I can click the one I want."
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The tighter the repro, the faster the fix. Include exact URLs, clicks, and inputs.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Which part of Fanout?
+      multiple: true
+      options:
+        - Backend (FastAPI / agent pipeline)
+        - Web app (Next.js)
+        - Browser extension
+        - Database / migrations
+        - CI / repo tooling
+        - Unsure
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit / version
+      description: Output of `git rev-parse --short HEAD` (or a tag).
+      placeholder: "abcd123 or v0.4.0"
+
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: OS, browser, Node, Python versions as applicable.
+      placeholder: "macOS 15.2, Chrome 141, Node 22.11, Python 3.12"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any error output — backend terminal, browser console, extension service worker console.
+      render: shell
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and discussions
+          required: true
+        - label: This is a bug, not a feature request or question
+          required: true

@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 
 /**
- * Cycles through `words` with a smooth fade-up transition. Used to make the
- * hero feel alive ("Ship to LinkedIn → X → Bluesky → Reddit ...").
+ * Cycles through `words` with a smooth fade+blur transition. Each word takes
+ * its natural width — the hero is center-aligned, so the line gracefully
+ * re-centers per word without leaving empty gaps.
  */
 export default function Rotator({
   words,
@@ -23,19 +24,11 @@ export default function Rotator({
   }, [words.length, intervalMs]);
 
   return (
-    <span className={`relative inline-block align-baseline ${className}`}>
-      {/* Reserve max width via the longest word so the layout doesn't jitter */}
-      <span className="invisible whitespace-nowrap">
-        {words.reduce((a, b) => (a.length >= b.length ? a : b))}
-      </span>
-      <span className="absolute inset-0 overflow-hidden">
-        <span
-          key={i}
-          className="block whitespace-nowrap fanout-rotator-item"
-        >
-          {words[i]}
-        </span>
-      </span>
+    <span
+      key={i}
+      className={`inline-block whitespace-nowrap fanout-rotator-item ${className}`}
+    >
+      {words[i]}
     </span>
   );
 }

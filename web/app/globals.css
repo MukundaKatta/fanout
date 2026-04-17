@@ -201,6 +201,9 @@ body::after {
 /* ─── Word rotator ────────────────────────────────────────────────────── */
 
 .fanout-rotator-item {
+  /* Parent .gradient-text sets -webkit-text-fill-color:transparent which cascades.
+     Override so rotator words pick up their own `color` (set via `text-white`). */
+  -webkit-text-fill-color: currentColor;
   animation: fanout-rotator 1.8s cubic-bezier(0.22, 1, 0.36, 1);
 }
 @keyframes fanout-rotator {
