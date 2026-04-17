@@ -40,7 +40,7 @@ jobs:
       - name: Import smoke test
         env:
           GROQ_API_KEY: dummy-for-import
-          DATABASE_URL: sqlite:///:memory:
+          DATABASE_URL: "sqlite:///:memory:"
         run: |
           python -c "from app.agent import SocialAgent, PLATFORMS, PLATFORM_RULES; \
                      assert len(PLATFORMS) == 15; \
