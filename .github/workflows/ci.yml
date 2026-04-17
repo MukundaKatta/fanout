@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (Python)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Syntax check
+        run: python -m compileall -q app
+
+      - name: Import smoke test
+        env:
+          GROQ_API_KEY: dummy-for-import
+          DATABASE_URL: sqlite:///:memory:
+        run: |
+          python -c "from app.agent import SocialAgent, PLATFORMS, PLATFORM_RULES; \
+                     assert len(PLATFORMS) == 15; \
+                     assert set(PLATFORMS) == set(PLATFORM_RULES.keys()); \
+                     print(f'OK — {len(PLATFORMS)} platforms wired')"
+
+  web:
+    name: Web (Next.js)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npx next build
+
+  extension:
+    name: Extension (manifest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extension
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate manifest.json
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          m = json.load(open("manifest.json"))
+          assert m["manifest_version"] == 3, "expected MV3"
+          for key in ("name", "version", "permissions", "host_permissions", "background"):
+              assert key in m, f"missing {key}"
+          print(f"OK — {m['name']} v{m['version']}, {len(m.get('content_scripts', []))} content scripts")
+          PY
+
+      - name: Check content script files exist
+        run: |
+          python3 - <<'PY'
+          import json, os
+          m = json.load(open("manifest.json"))
+          for cs in m.get("content_scripts", []):
+              for js in cs["js"]:
+                  assert os.path.exists(js), f"missing file: {js}"
+          assert os.path.exists(m["background"]["service_worker"])
+          print("OK — all referenced files exist")
+          PY
