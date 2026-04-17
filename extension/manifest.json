@@ -72,6 +72,6 @@
       ],
       "js": ["src/content-mastodon.js"],
       "run_at": "document_idle"
-    },
+    }
   ]
 }
