@@ -1,5 +1,9 @@
 # Fanout
 
+[![CI](https://github.com/MukundaKatta/fanout/actions/workflows/ci.yml/badge.svg)](https://github.com/MukundaKatta/fanout/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FMukundaKatta%2Ffanout&project-name=fanout&root-directory=web&env=NEXT_PUBLIC_API_URL%2CNEXT_PUBLIC_SUPABASE_URL%2CNEXT_PUBLIC_SUPABASE_ANON_KEY)
+
 Agentic content studio for indie shippers. One product description → 5 distinct, platform-tailored drafts → posted from your own browser.
 
 **15 channels:** LinkedIn · X · Threads · Bluesky · Mastodon · Instagram · Reddit · Hacker News · Product Hunt · Medium · Dev.to · Email · Telegram · Discord · Slack
@@ -69,6 +73,36 @@ web/          Next.js 15 + Tailwind + Supabase
   components/           Logo, Marquee, Spotlight, Typewriter, ...
 ```
 
+## Deploying the web app
+
+**Easy mode — Vercel native git integration (recommended):**
+
+1. Click [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FMukundaKatta%2Ffanout&project-name=fanout&root-directory=web&env=NEXT_PUBLIC_API_URL%2CNEXT_PUBLIC_SUPABASE_URL%2CNEXT_PUBLIC_SUPABASE_ANON_KEY) above
+2. Set `Root Directory` to `web` when prompted
+3. Provide the three `NEXT_PUBLIC_*` env vars
+4. Vercel auto-deploys on every push to `main`
+
+**Optional — CI-driven deploy from GitHub Actions:**
+
+The repo includes [`.github/workflows/deploy-web.yml`](.github/workflows/deploy-web.yml). It runs only when you set:
+
+- Secret `VERCEL_TOKEN`
+- Secret `VERCEL_ORG_ID`
+- Secret `VERCEL_PROJECT_ID`
+- Variable `VERCEL_DEPLOY_ENABLED=true`
+
+This lets CI gate the deploy and post the live URL back to the commit.
+
+## Security
+
+See [SECURITY.md](SECURITY.md). Short version: the backend never holds your social
+credentials — the extension drives composers in your own logged-in browser session.
+
+## Contributing
+
+PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). `main` is protected; CI must
+pass and changes flow through PRs.
+
 ## License
 
-MIT
+[MIT](LICENSE) © Mukunda Katta

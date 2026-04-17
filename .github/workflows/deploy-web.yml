@@ -1,0 +1,60 @@
+name: Deploy web to Vercel
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/deploy-web.yml"
+
+# Deploys are gated on CI green for main; the cron of CI fires from ci.yml in parallel.
+# This workflow itself only runs when the three secrets below exist (skipped otherwise),
+# so forks and contributors without Vercel access don't see noisy red runs.
+
+concurrency:
+  group: deploy-web-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Vercel production deploy
+    runs-on: ubuntu-latest
+    if: ${{ vars.VERCEL_DEPLOY_ENABLED == 'true' }}
+    defaults:
+      run:
+        working-directory: web
+    env:
+      VERCEL_ORG_ID:     ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install Vercel CLI
+        run: npm install --global vercel@latest
+
+      - name: Pull Vercel env (production)
+        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Build
+        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Deploy
+        id: deploy
+        run: |
+          URL=$(vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }})
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Deployed → $URL"
+
+      - name: Comment on commit
+        if: always() && steps.deploy.outputs.url
+        run: |
+          gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" \
+            -f body="🚀 Deployed: ${{ steps.deploy.outputs.url }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,25 @@
+# Code owners — these users are auto-requested for review on PRs touching matching paths.
+# Order matters: later patterns override earlier ones.
+#
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner — every file unless overridden below
+*                                @MukundaKatta
+
+# Backend
+/backend/                        @MukundaKatta
+/backend/app/agent.py            @MukundaKatta
+/backend/app/main.py             @MukundaKatta
+
+# Web app
+/web/                            @MukundaKatta
+/web/lib/platforms.ts            @MukundaKatta
+/web/components/                 @MukundaKatta
+
+# Browser extension — DOM scrapers rot fast, owner watches closely
+/extension/                      @MukundaKatta
+
+# CI / repo plumbing
+/.github/                        @MukundaKatta
+/CONTRIBUTING.md                 @MukundaKatta
+/SECURITY.md                     @MukundaKatta

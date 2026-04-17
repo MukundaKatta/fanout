@@ -1,0 +1,51 @@
+version: 2
+
+# Updates batched weekly to avoid PR spam. Patch + minor only by default;
+# major updates open as separate PRs so reviewers don't auto-merge breaking changes.
+
+updates:
+  # Web (Next.js + Tailwind + Supabase + react-icons + lucide)
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - web
+    groups:
+      web-minor:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react-dom"
+        update-types: ["version-update:semver-major"]
+
+  # Backend (FastAPI + SQLAlchemy + Groq + psycopg)
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - backend
+    groups:
+      backend-minor:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # GitHub Actions versions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+      - ci
