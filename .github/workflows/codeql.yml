@@ -1,0 +1,50 @@
+name: CodeQL
+
+# CodeQL runs static security analysis across the codebase. Findings appear under
+# the repo's "Security → Code scanning" tab and on PRs as inline comments.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly Sunday 03:00 UTC — catches new advisories that affect existing code
+    - cron: "0 3 * * 0"
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # JavaScript/TypeScript covers the web app (Next.js + components/lib)
+          # and the extension (background.js, content scripts, popup.js)
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # Use the security-extended query suite for stricter findings
+          queries: security-extended
+
+      - name: Perform analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
