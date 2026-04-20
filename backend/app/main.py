@@ -65,6 +65,15 @@ class BulkQueueRequest(BaseModel):
     draft_ids: list[str]
 
 
+class ReviewCheckpointRequest(BaseModel):
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    notes: str | None = None
+
+
+class ReviewApprovalRequest(BaseModel):
+    reviewer: str = Field(..., min_length=2, max_length=120)
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
@@ -119,6 +128,14 @@ def get_draft(draft_id: str, uid: str = Depends(current_user)):
     return d
 
 
+@app.get("/platforms/{platform}/adapter")
+def adapter_contract(platform: str, uid: str = Depends(current_user)):
+    adapter = store.channel_adapter_contract(platform)
+    if not adapter:
+        raise HTTPException(404, "Platform not found")
+    return {"user_id": uid, "adapter": adapter}
+
+
 @app.patch("/drafts/{draft_id}")
 def update_draft(draft_id: str, content: str, uid: str = Depends(current_user)):
     d = store.update_content(uid, draft_id, content)
@@ -130,6 +147,23 @@ def update_draft(draft_id: str, content: str, uid: str = Depends(current_user)):
 @app.post("/drafts/{draft_id}/queue")
 def queue(draft_id: str, uid: str = Depends(current_user)):
     d = store.queue_now(uid, draft_id)
+    if not d:
+        raise HTTPException(404, "Not found")
+    return d
+
+
+@app.post("/drafts/{draft_id}/review-checkpoint")
+def review_checkpoint(draft_id: str, req: ReviewCheckpointRequest, uid: str = Depends(current_user)):
+    d = store.set_review_checkpoint(uid, draft_id, req.confidence, req.notes)
+    if not d:
+        raise HTTPException(404, "Not found")
+    checkpoint = store.build_review_checkpoint(d, req.confidence)
+    return {"draft": d, "checkpoint": checkpoint}
+
+
+@app.post("/drafts/{draft_id}/approve")
+def approve_review(draft_id: str, req: ReviewApprovalRequest, uid: str = Depends(current_user)):
+    d = store.approve_review(uid, draft_id, req.reviewer)
     if not d:
         raise HTTPException(404, "Not found")
     return d
