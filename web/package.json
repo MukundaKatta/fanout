@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@supabase/ssr": "^0.10.2",
-    "@supabase/supabase-js": "^2.46.1",
+    "@supabase/supabase-js": "^2.104.0",
     "lucide-react": "^0.469.0",
     "next": "^15.5.15",
     "react": "19.2.5",
