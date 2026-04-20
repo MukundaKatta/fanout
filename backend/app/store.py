@@ -10,6 +10,35 @@ from app.db import session_scope
 from app.models import Draft
 
 
+CHANNEL_ADAPTERS = {
+    "x": {"composer": "content-x.js", "supportsScheduling": True, "requiresApproval": False},
+    "linkedin": {"composer": "content-linkedin.js", "supportsScheduling": True, "requiresApproval": True},
+    "reddit": {"composer": "content-reddit.js", "supportsScheduling": False, "requiresApproval": True},
+    "threads": {"composer": "content-threads.js", "supportsScheduling": False, "requiresApproval": True},
+    "bluesky": {"composer": "content-bluesky.js", "supportsScheduling": True, "requiresApproval": False},
+    "mastodon": {"composer": "content-mastodon.js", "supportsScheduling": True, "requiresApproval": False},
+    "instagram": {"composer": "content-instagram.js", "supportsScheduling": False, "requiresApproval": True},
+}
+
+
+def channel_adapter_contract(platform: str) -> dict | None:
+    adapter = CHANNEL_ADAPTERS.get(platform)
+    if not adapter:
+        return None
+    return {"platform": platform, **adapter}
+
+
+def build_review_checkpoint(draft: dict, confidence: float) -> dict:
+    approval_required = confidence < 0.7 or channel_adapter_contract(draft["platform"])["requiresApproval"]
+    return {
+        "draft_id": draft["id"],
+        "platform": draft["platform"],
+        "confidence": round(confidence, 3),
+        "requires_review": approval_required,
+        "recommended_action": "human_review" if approval_required else "queue",
+    }
+
+
 def save_drafts(user_id: str, product: str, result: dict) -> list[dict]:
     out = []
     with session_scope() as s:
@@ -72,6 +101,38 @@ def update_content(user_id: str, draft_id: str, content: str) -> dict | None:
         if not d or d.user_id != user_id:
             return None
         d.content = content
+        return d.to_dict()
+
+
+def set_review_checkpoint(user_id: str, draft_id: str, confidence: float, notes: str | None = None) -> dict | None:
+    with session_scope() as s:
+        d = s.get(Draft, draft_id)
+        if not d or d.user_id != user_id:
+            return None
+        current_plan = d.plan or {}
+        current_plan["review"] = {
+            "confidence": round(confidence, 3),
+            "notes": notes,
+            "requires_review": confidence < 0.7 or channel_adapter_contract(d.platform)["requiresApproval"],
+        }
+        d.plan = current_plan
+        if current_plan["review"]["requires_review"]:
+            d.status = "review_required"
+        return d.to_dict()
+
+
+def approve_review(user_id: str, draft_id: str, reviewer: str) -> dict | None:
+    with session_scope() as s:
+        d = s.get(Draft, draft_id)
+        if not d or d.user_id != user_id:
+            return None
+        current_plan = d.plan or {}
+        review = current_plan.get("review", {})
+        review["approved_by"] = reviewer
+        review["requires_review"] = False
+        current_plan["review"] = review
+        d.plan = current_plan
+        d.status = "queued"
         return d.to_dict()
 
 
