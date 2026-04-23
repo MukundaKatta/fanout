@@ -29,7 +29,8 @@ def channel_adapter_contract(platform: str) -> dict | None:
 
 
 def build_review_checkpoint(draft: dict, confidence: float) -> dict:
-    approval_required = confidence < 0.7 or channel_adapter_contract(draft["platform"])["requiresApproval"]
+    adapter = channel_adapter_contract(draft["platform"])
+    approval_required = confidence < 0.7 or (adapter["requiresApproval"] if adapter else False)
     return {
         "draft_id": draft["id"],
         "platform": draft["platform"],
@@ -110,10 +111,11 @@ def set_review_checkpoint(user_id: str, draft_id: str, confidence: float, notes:
         if not d or d.user_id != user_id:
             return None
         current_plan = d.plan or {}
+        adapter = channel_adapter_contract(d.platform)
         current_plan["review"] = {
             "confidence": round(confidence, 3),
             "notes": notes,
-            "requires_review": confidence < 0.7 or channel_adapter_contract(d.platform)["requiresApproval"],
+            "requires_review": confidence < 0.7 or (adapter["requiresApproval"] if adapter else False),
         }
         d.plan = current_plan
         if current_plan["review"]["requires_review"]:
