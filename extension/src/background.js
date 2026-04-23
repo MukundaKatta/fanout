@@ -61,7 +61,9 @@ async function report(draftId, { postUrl, error, info }) {
       body: JSON.stringify({
         draft_id: draftId,
         post_url: postUrl ?? null,
-        error: error ?? info ?? null,
+        // info = "needs_user_action" (copy & open) is not an error; only real
+        // failures should mark the draft failed in the backend.
+        error: error ?? null,
       }),
     });
   } catch (e) {
