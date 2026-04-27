@@ -1,6 +1,6 @@
 fastapi>=0.136.1
 uvicorn[standard]>=0.32.0
-groq>=0.11.0
+groq>=1.2.0
 python-dotenv>=1.0.0
 trafilatura>=2.0.0
 pydantic>=2.9.0
