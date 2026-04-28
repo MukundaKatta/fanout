@@ -170,11 +170,22 @@ class SocialAgent:
 
     # --- single polished draft -----------------------------------------------
 
-    def plan(self, product: str) -> Plan:
+    def plan(self, product: str, *, research_context: str | None = None) -> Plan:
         system = (
             "You are a senior content strategist. Produce a tight content plan as strict "
             "JSON: audience (string), angle (string), key_points (3-5 items), tone, cta."
         )
+        if research_context:
+            # Research goes in the *system* prompt as authoritative context, with
+            # an explicit instruction so the model doesn't paraphrase headlines
+            # back as key_points wholesale — we want the angle to be *informed*
+            # by what's trending, not a list of summaries.
+            system += (
+                "\n\nUse the live signals below to ground the angle in current "
+                "conversation. Reference at most one or two by topic where it "
+                "strengthens the pitch; do not list them as key_points.\n\n"
+                f"Live signals:\n{research_context}"
+            )
         data = json.loads(self._chat(system, f"Product:\n{product}", json_mode=True))
         return Plan(
             audience=data["audience"],
@@ -184,7 +195,14 @@ class SocialAgent:
             cta=data["cta"],
         )
 
-    def write(self, platform: str, product: str, plan: Plan) -> str:
+    def write(
+        self,
+        platform: str,
+        product: str,
+        plan: Plan,
+        *,
+        research_context: str | None = None,
+    ) -> str:
         if platform not in PLATFORM_RULES:
             raise ValueError(f"Unknown platform: {platform}")
         system = (
@@ -195,6 +213,12 @@ class SocialAgent:
             f"Product:\n{product}\n\nContent plan:\n{plan.as_prompt_block()}\n\n"
             f"Write the {platform} post."
         )
+        if research_context:
+            user += (
+                "\n\nLive signals you may *optionally* reference where it lifts "
+                "the post. Do not force-fit. Only use what genuinely fits the "
+                f"angle and platform tone:\n{research_context}"
+            )
         return self._chat(system, user).strip()
 
     def critique(self, platform: str, draft: str) -> str:
@@ -214,11 +238,17 @@ class SocialAgent:
         user = f"Original:\n{draft}\n\nFeedback:\n{feedback}\n\nRevise."
         return self._chat(system, user).strip()
 
-    def run(self, product: str, platforms: tuple[str, ...] = PLATFORMS) -> dict:
-        plan_ = self.plan(product)
+    def run(
+        self,
+        product: str,
+        platforms: tuple[str, ...] = PLATFORMS,
+        *,
+        research_context: str | None = None,
+    ) -> dict:
+        plan_ = self.plan(product, research_context=research_context)
         posts = {}
         for platform in platforms:
-            draft = self.write(platform, product, plan_)
+            draft = self.write(platform, product, plan_, research_context=research_context)
             feedback = self.critique(platform, draft)
             final = self.refine(platform, draft, feedback)
             posts[platform] = {"draft": draft, "feedback": feedback, "final": final}
@@ -226,7 +256,14 @@ class SocialAgent:
 
     # --- N variations per platform -------------------------------------------
 
-    def variations(self, product: str, platform: str, n: int = 5) -> list[dict]:
+    def variations(
+        self,
+        product: str,
+        platform: str,
+        n: int = 5,
+        *,
+        research_context: str | None = None,
+    ) -> list[dict]:
         if platform not in PLATFORM_RULES:
             raise ValueError(f"Unknown platform: {platform}")
         if n < 1 or n > 8:
@@ -244,6 +281,12 @@ class SocialAgent:
             f"Use these angles in order:\n{angle_lines}"
         )
         user = f"Product:\n{product}\n\nGenerate {n} variations now."
+        if research_context:
+            user += (
+                "\n\nLive signals you may *optionally* reference where it lifts "
+                "a variation. Don't force-fit; vary which signals (if any) each "
+                f"variation cites:\n{research_context}"
+            )
         raw = self._chat(system, user, json_mode=True, temperature=0.9)
         data = json.loads(raw)
         items = data.get("variations", [])
