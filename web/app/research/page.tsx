@@ -21,6 +21,7 @@ import {
   Search,
   Sparkles,
   Trash2,
+  Wand2,
 } from "lucide-react";
 import { api, ResearchSnippet, ResearchSource } from "@/lib/api";
 
@@ -43,6 +44,53 @@ export default function ResearchPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastFetched, setLastFetched] = useState<number | null>(null);
+
+  // "Suggest from product" — the model converts a product blurb into
+  // 5 short search queries. Cuts the cold-start friction for first-time
+  // users who don't know what to type.
+  const [suggestProduct, setSuggestProduct] = useState("");
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestionsApplied, setSuggestionsApplied] = useState(false);
+
+  const suggestQueries = async () => {
+    if (suggestProduct.trim().length < 10) {
+      setError("Add a product description (10+ chars) to get suggestions.");
+      return;
+    }
+    setSuggesting(true);
+    setError(null);
+    try {
+      const out = await api.research.suggest(suggestProduct.trim(), 5);
+      if (out.queries.length === 0) {
+        setError("No suggestions returned — try a more descriptive product blurb.");
+        return;
+      }
+      // Replace empty inputs first, then append the rest. This way an
+      // existing partial draft isn't trampled but we still surface the
+      // full suggestion set.
+      setQueries((prev) => {
+        const filled = [...prev];
+        let cursor = 0;
+        for (const q of out.queries) {
+          while (cursor < filled.length && filled[cursor].trim()) cursor++;
+          if (cursor < filled.length) {
+            filled[cursor] = q;
+            cursor++;
+          } else {
+            filled.push(q);
+          }
+        }
+        return filled;
+      });
+      setSuggestionsApplied(true);
+      // Brief flash — clear the "applied" indicator so the user can re-run.
+      setTimeout(() => setSuggestionsApplied(false), 2500);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSuggesting(false);
+    }
+  };
 
   const refresh = async () => {
     setLoading(true);
@@ -117,6 +165,40 @@ export default function ResearchPage() {
         time you generate with <em>use research</em> on, the agent gets the top unused
         snippets folded into its planning prompt.
       </p>
+
+      {/* Suggest queries from product blurb — kills cold-start friction */}
+      <section className="rounded-xl border border-violet-400/20 bg-violet-500/[0.04] p-5 mb-4">
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <Wand2 size={14} className="text-violet-300" />
+            Don&apos;t know what to track? Suggest from your product
+          </h2>
+          {suggestionsApplied && (
+            <span className="text-xs text-emerald-300">Added 5 queries below</span>
+          )}
+        </div>
+        <div className="flex gap-2 items-stretch">
+          <textarea
+            value={suggestProduct}
+            onChange={(e) => setSuggestProduct(e.target.value)}
+            placeholder="Paste your product description — same text you'd put in the composer..."
+            rows={2}
+            className="flex-1 rounded-lg bg-black/40 border border-white/10 px-3 py-2 text-sm focus:outline-none focus:border-violet-400/50 resize-none"
+          />
+          <button
+            onClick={suggestQueries}
+            disabled={suggesting || suggestProduct.trim().length < 10}
+            className="rounded-lg border border-violet-400/30 bg-violet-500/15 px-3 text-xs font-medium hover:bg-violet-500/25 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1.5 whitespace-nowrap"
+          >
+            {suggesting ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Sparkles size={12} />
+            )}
+            {suggesting ? "Thinking..." : "Suggest 5"}
+          </button>
+        </div>
+      </section>
 
       <section className="rounded-xl border border-white/10 bg-white/[0.03] p-5 mb-8">
         <h2 className="text-sm font-semibold mb-4 flex items-center gap-2">

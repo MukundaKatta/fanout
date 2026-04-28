@@ -87,6 +87,11 @@ export const api = {
       const tail = qs.toString();
       return request<ResearchSnippet[]>(`/research${tail ? `?${tail}` : ""}`);
     },
+    suggest: (product: string, count = 5) =>
+      request<{ queries: string[] }>("/research/suggest", {
+        method: "POST",
+        body: JSON.stringify({ product, count }),
+      }),
   },
 };
 
