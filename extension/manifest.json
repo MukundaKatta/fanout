@@ -1,12 +1,18 @@
 {
   "manifest_version": 3,
   "name": "Fanout Poster",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Posts Fanout drafts to LinkedIn, X, Threads, Bluesky, Mastodon, Instagram, Reddit, and more — from your own browser session.",
-  "permissions": ["storage", "alarms", "scripting", "activeTab", "clipboardWrite", "tabs"],
+  "permissions": [
+    "storage",
+    "alarms",
+    "scripting",
+    "activeTab",
+    "clipboardWrite",
+    "tabs"
+  ],
   "host_permissions": [
     "http://localhost:8000/*",
-
     "https://x.com/*",
     "https://twitter.com/*",
     "https://www.linkedin.com/*",
@@ -19,7 +25,6 @@
     "https://indieweb.social/*",
     "https://mas.to/*",
     "https://www.reddit.com/*",
-
     "https://news.ycombinator.com/*",
     "https://www.producthunt.com/*",
     "https://medium.com/*",
@@ -38,28 +43,49 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://x.com/*", "https://twitter.com/*"],
-      "js": ["src/content-x.js"],
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*"
+      ],
+      "js": [
+        "src/content-x.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://www.linkedin.com/*"],
-      "js": ["src/content-linkedin.js"],
+      "matches": [
+        "https://www.linkedin.com/*"
+      ],
+      "js": [
+        "src/content-linkedin.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://www.threads.net/*"],
-      "js": ["src/content-threads.js"],
+      "matches": [
+        "https://www.threads.net/*"
+      ],
+      "js": [
+        "src/content-threads.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://www.instagram.com/*"],
-      "js": ["src/content-instagram.js"],
+      "matches": [
+        "https://www.instagram.com/*"
+      ],
+      "js": [
+        "src/content-instagram.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://bsky.app/*"],
-      "js": ["src/content-bluesky.js"],
+      "matches": [
+        "https://bsky.app/*"
+      ],
+      "js": [
+        "src/content-bluesky.js"
+      ],
       "run_at": "document_idle"
     },
     {
@@ -70,7 +96,9 @@
         "https://indieweb.social/*",
         "https://mas.to/*"
       ],
-      "js": ["src/content-mastodon.js"],
+      "js": [
+        "src/content-mastodon.js"
+      ],
       "run_at": "document_idle"
     }
   ]
