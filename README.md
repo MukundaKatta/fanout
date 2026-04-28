@@ -111,15 +111,24 @@ curl -X POST http://localhost:8000/research/subscriptions \
 curl -X POST http://localhost:8000/research/tick
 ```
 
-Wire `POST /research/tick` to **any** scheduler — Vercel cron, Render scheduled
-job, or the bundled GitHub Action at `.github/workflows/research-tick.yml`.
+Two tick endpoints depending on use case:
+
+- **`POST /research/tick`** — per-user, JWT auth. The "Run due now" button on
+  the workbench hits this.
+- **`POST /research/tick/all`** — service-auth (`X-Tick-Secret` header), fans
+  out across every user in one request. **Disabled by default** — set
+  `RESEARCH_TICK_SECRET` env var on the backend to enable.
+
+For a real cron, use `/research/tick/all`. Wire it to **any** scheduler —
+Vercel cron, Render scheduled job, or the bundled GitHub Action at
+`.github/workflows/research-tick.yml`.
 
 To enable the GitHub Action:
 
-1. Set repo **Variable** `RESEARCH_TICK_ENABLED = "true"`
-2. Set repo **Secret** `RESEARCH_TICK_URL` to your deployed `/research/tick` URL
-3. (Optional) Set repo **Secret** `RESEARCH_TICK_TOKEN` if your backend requires
-   a Supabase Bearer token
+1. Set backend env var `RESEARCH_TICK_SECRET` to a strong random string
+2. Set repo **Variable** `RESEARCH_TICK_ENABLED = "true"`
+3. Set repo **Secret** `RESEARCH_TICK_URL` = `https://<your-backend>/research/tick/all`
+4. Set repo **Secret** `RESEARCH_TICK_SECRET` to the same value as step 1
 
 The action runs hourly. The tick endpoint is idempotent — subscriptions that
 aren't due yet are skipped server-side, so over-polling is safe.

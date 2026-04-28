@@ -1,11 +1,13 @@
-# Research-tick cron — hits POST /research/tick on the deployed backend so
-# active research subscriptions auto-fetch on their configured cadence.
+# Research-tick cron — hits POST /research/tick/all on the deployed backend so
+# active research subscriptions auto-fetch on their configured cadence, fanning
+# out across every user in one request.
 #
 # Disabled by default. To enable:
-#   1. Deploy the backend somewhere reachable from GitHub-hosted runners.
+#   1. Deploy the backend with env var RESEARCH_TICK_SECRET set to a strong random
+#      string (the service auth token for the fan-out endpoint).
 #   2. Set repo VARIABLE  RESEARCH_TICK_ENABLED = "true"
-#   3. Set repo SECRET    RESEARCH_TICK_URL     = "https://api.example.com/research/tick"
-#   4. Optionally set     RESEARCH_TICK_TOKEN   = "<bearer-token>"   (Supabase JWT)
+#   3. Set repo SECRET    RESEARCH_TICK_URL     = "https://api.example.com/research/tick/all"
+#   4. Set repo SECRET    RESEARCH_TICK_SECRET  = "<same value as backend env>"
 #
 # The job is intentionally permissive — a transient backend hiccup should not
 # turn the repo's CI badge red. Failures are logged but the step exits 0.
@@ -50,23 +52,22 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Hit /research/tick
+      - name: Hit /research/tick/all
         if: steps.probe.outputs.skip != 'true'
         env:
           URL: ${{ secrets.RESEARCH_TICK_URL }}
-          TOKEN: ${{ secrets.RESEARCH_TICK_TOKEN }}
+          TICK_SECRET: ${{ secrets.RESEARCH_TICK_SECRET }}
         run: |
           set -u
+          if [ -z "$TICK_SECRET" ]; then
+            echo "::warning::RESEARCH_TICK_SECRET is unset — backend will reject the request with 403."
+          fi
           # ``-w`` writes a status-code line we can inspect for non-2xx.
           # ``--max-time`` caps the request so a hung backend doesn't burn
           # the whole 5-minute timeout. Body goes to ``response.json``.
-          AUTH=()
-          if [ -n "$TOKEN" ]; then
-            AUTH=(-H "Authorization: Bearer $TOKEN")
-          fi
           STATUS=$(curl -sS -X POST "$URL" \
             -H 'content-type: application/json' \
-            "${AUTH[@]}" \
+            -H "X-Tick-Secret: $TICK_SECRET" \
             --max-time 90 \
             -o response.json \
             -w '%{http_code}' || echo "000")
@@ -75,7 +76,7 @@ jobs:
           cat response.json || true
           echo
           if [ "$STATUS" -lt 200 ] || [ "$STATUS" -ge 300 ]; then
-            echo "::warning::Research tick returned HTTP $STATUS — check backend health."
+            echo "::warning::Research tick returned HTTP $STATUS — check backend health and secret."
             # Exit 0 anyway; a flaky backend should not turn the repo red.
           fi
 
