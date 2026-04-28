@@ -38,6 +38,12 @@ class Draft(Base):
     post_url: Mapped[str | None] = mapped_column(String, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # IDs of research snippets that fed into this draft's prompt. Stored as a
+    # JSON list rather than a join table so a single SELECT renders the draft +
+    # its citations without an extra round-trip; (user_id, url) snippet
+    # uniqueness already gives us stable IDs to reference here.
+    cited_snippet_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
@@ -56,6 +62,7 @@ class Draft(Base):
             "scheduled_at": self.scheduled_at.isoformat() if self.scheduled_at else None,
             "post_url": self.post_url,
             "error": self.error,
+            "cited_snippet_ids": list(self.cited_snippet_ids or []),
             "created_at": self.created_at.isoformat(),
         }
 
