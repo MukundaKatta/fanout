@@ -168,6 +168,46 @@ class SocialAgent:
         resp = self.client.chat.completions.create(**kwargs)
         return resp.choices[0].message.content or ""
 
+    # --- research helpers ----------------------------------------------------
+
+    def suggest_research_queries(self, product: str, *, n: int = 5) -> list[str]:
+        """Suggest ``n`` short search queries to feed the research loop.
+
+        Used by the ``/research`` workbench so a user landing on it for the
+        first time isn't staring at an empty input. We deliberately ask for
+        *short* phrases (2-5 words) because HN Algolia / Reddit / Dev.to all
+        return better signal on tight queries than long sentences.
+        """
+        if not 1 <= n <= 10:
+            raise ValueError("n must be between 1 and 10")
+        system = (
+            "You are a research strategist. Given a product description, "
+            f"produce {n} short search queries (2-5 words each) the maker "
+            "should track on Hacker News / Reddit / Dev.to to find live "
+            "conversation worth referencing in their content. Mix audience "
+            "terms, problem terms, and adjacent space terms. Avoid generic "
+            "single-word queries.\n\n"
+            f'Respond as strict JSON: {{"queries": ["query 1", "query 2", ...]}}'
+        )
+        raw = self._chat(system, f"Product:\n{product}", json_mode=True, temperature=0.5)
+        data = json.loads(raw)
+        items = data.get("queries", [])
+        # Be defensive — Llama occasionally returns nested objects or empty
+        # strings. Strip + dedupe + cap to ``n`` so callers get a clean list.
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in items:
+            if not isinstance(item, str):
+                continue
+            q = item.strip()
+            if not q or q.lower() in seen:
+                continue
+            seen.add(q.lower())
+            out.append(q)
+            if len(out) >= n:
+                break
+        return out
+
     # --- single polished draft -----------------------------------------------
 
     def plan(self, product: str, *, research_context: str | None = None) -> Plan:
