@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { api, Draft, Platform, Status } from "@/lib/api";
 import {
   PLATFORMS,
@@ -15,6 +16,7 @@ import {
   Clock,
   ExternalLink,
   Loader2,
+  Newspaper,
   Send,
   Sparkles,
   Wand2,
@@ -36,6 +38,10 @@ export default function Home() {
   const [posting, setPosting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recent, setRecent] = useState<Draft[]>([]);
+  const [useResearch, setUseResearch] = useState(false);
+  // Number of *unused* research snippets the agent could fold into the next
+  // run. Refreshed alongside `recent` so the indicator stays live.
+  const [researchCount, setResearchCount] = useState<number | null>(null);
 
   const meta = PLATFORM_BY_ID[platform];
 
@@ -46,8 +52,20 @@ export default function Home() {
     } catch {}
   }
 
+  async function refreshResearchCount() {
+    try {
+      const list = await api.research.list({ only_unused: true, limit: 100 });
+      setResearchCount(list.length);
+    } catch {
+      // Silently ignore — older backends without /research endpoints just
+      // leave the indicator hidden.
+      setResearchCount(null);
+    }
+  }
+
   useEffect(() => {
     refreshRecent();
+    refreshResearchCount();
     const t = setInterval(refreshRecent, 5000);
     return () => clearInterval(t);
   }, []);
@@ -58,9 +76,11 @@ export default function Home() {
     setVariations([]);
     setSelected(new Set());
     try {
-      const out = await api.variations(product, platform, 5);
+      const out = await api.variations(product, platform, 5, { useResearch });
       setVariations(out.drafts);
       setVariationsKey((k) => k + 1); // re-trigger typewriter
+      // After a research-grounded run the unused count drops — refresh.
+      if (useResearch) void refreshResearchCount();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -287,6 +307,37 @@ export default function Home() {
               </div>
             ))}
           </div>
+
+          {/* Research toggle — only surfaces if the backend has snippets banked */}
+          {researchCount !== null && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-white/[0.02] px-4 py-3">
+              <label className="flex items-center gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={useResearch}
+                  onChange={(e) => setUseResearch(e.target.checked)}
+                  disabled={researchCount === 0}
+                  className="h-4 w-4 accent-violet-400 disabled:opacity-40"
+                />
+                <span className="text-sm flex items-center gap-2">
+                  <Newspaper size={14} className="text-violet-300" />
+                  Use live research
+                  <span className="text-xs text-white/50">
+                    {researchCount === 0
+                      ? "no banked snippets — fetch some first"
+                      : `${researchCount} unused snippet${researchCount === 1 ? "" : "s"} ready`}
+                  </span>
+                </span>
+              </label>
+              <Link
+                href="/research"
+                className="text-xs text-violet-300 hover:text-violet-200 inline-flex items-center gap-1"
+              >
+                Open research workbench
+                <ArrowRight size={11} />
+              </Link>
+            </div>
+          )}
 
           {/* CTA */}
           <div className="flex flex-wrap items-center justify-between gap-4 pt-2">

@@ -23,15 +23,29 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  generate: (product: string, platforms: string[]) =>
-    request<{ plan: unknown; drafts: Draft[] }>("/generate", {
+  generate: (product: string, platforms: string[], opts?: { useResearch?: boolean }) =>
+    request<{ plan: unknown; drafts: Draft[]; research_used?: number }>("/generate", {
       method: "POST",
-      body: JSON.stringify({ product, platforms }),
+      body: JSON.stringify({
+        product,
+        platforms,
+        use_research: opts?.useResearch ?? false,
+      }),
     }),
-  variations: (product: string, platform: Platform, count = 5) =>
-    request<{ drafts: Draft[] }>("/variations", {
+  variations: (
+    product: string,
+    platform: Platform,
+    count = 5,
+    opts?: { useResearch?: boolean },
+  ) =>
+    request<{ drafts: Draft[]; research_used?: number }>("/variations", {
       method: "POST",
-      body: JSON.stringify({ product, platform, count }),
+      body: JSON.stringify({
+        product,
+        platform,
+        count,
+        use_research: opts?.useResearch ?? false,
+      }),
     }),
   list: () => request<Draft[]>("/drafts"),
   edit: (id: string, content: string) =>
@@ -52,6 +66,28 @@ export const api = {
   cancelSchedule: (id: string) =>
     request<Draft>(`/drafts/${id}/schedule`, { method: "DELETE" }),
   me: () => request<{ user_id: string }>("/me"),
+
+  // --- research loop ---------------------------------------------------------
+  research: {
+    run: (input: {
+      queries?: string[];
+      rss_feeds?: string[];
+      sources?: ResearchSource[];
+      per_source_limit?: number;
+    }) =>
+      request<{ fetched: number; saved: ResearchSnippet[] }>("/research", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    list: (params?: { source?: ResearchSource; only_unused?: boolean; limit?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.source) qs.set("source", params.source);
+      if (params?.only_unused) qs.set("only_unused", "true");
+      if (params?.limit != null) qs.set("limit", String(params.limit));
+      const tail = qs.toString();
+      return request<ResearchSnippet[]>(`/research${tail ? `?${tail}` : ""}`);
+    },
+  },
 };
 
 export type Status = "pending" | "queued" | "scheduled" | "posting" | "posted" | "failed";
@@ -81,5 +117,21 @@ export type Draft = {
   scheduled_at: string | null;
   post_url?: string | null;
   error?: string | null;
+  created_at: string;
+};
+
+export type ResearchSource = "hn" | "devto" | "reddit" | "rss";
+
+export type ResearchSnippet = {
+  id: string;
+  source: ResearchSource;
+  query: string | null;
+  url: string;
+  title: string;
+  snippet: string | null;
+  author: string | null;
+  score: number;
+  published_at: string | null;
+  used_in_draft_id: string | null;
   created_at: string;
 };
