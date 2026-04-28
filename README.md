@@ -97,6 +97,42 @@ Snippets are scored by upstream popularity × recency (48h half-life), deduped
 per `(user_id, url)`, and marked **used** the first time they feed into a
 draft so the next research run pulls fresh material.
 
+### Autonomous loop (recurring subscriptions)
+
+Save a query/feed config once and let it refresh on its own:
+
+```bash
+# create a daily subscription
+curl -X POST http://localhost:8000/research/subscriptions \
+  -H 'content-type: application/json' \
+  -d '{"name":"AI agents","queries":["ai agents","llm tooling"],"interval_hours":24}'
+
+# tick the loop — runs every active subscription that's due
+curl -X POST http://localhost:8000/research/tick
+```
+
+Two tick endpoints depending on use case:
+
+- **`POST /research/tick`** — per-user, JWT auth. The "Run due now" button on
+  the workbench hits this.
+- **`POST /research/tick/all`** — service-auth (`X-Tick-Secret` header), fans
+  out across every user in one request. **Disabled by default** — set
+  `RESEARCH_TICK_SECRET` env var on the backend to enable.
+
+For a real cron, use `/research/tick/all`. Wire it to **any** scheduler —
+Vercel cron, Render scheduled job, or the bundled GitHub Action at
+`.github/workflows/research-tick.yml`.
+
+To enable the GitHub Action:
+
+1. Set backend env var `RESEARCH_TICK_SECRET` to a strong random string
+2. Set repo **Variable** `RESEARCH_TICK_ENABLED = "true"`
+3. Set repo **Secret** `RESEARCH_TICK_URL` = `https://<your-backend>/research/tick/all`
+4. Set repo **Secret** `RESEARCH_TICK_SECRET` to the same value as step 1
+
+The action runs hourly. The tick endpoint is idempotent — subscriptions that
+aren't due yet are skipped server-side, so over-polling is safe.
+
 ## Deploying the web app
 
 **Easy mode — Vercel native git integration (recommended):**
