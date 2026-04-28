@@ -68,6 +68,24 @@ class ResearchSuggestRequest(BaseModel):
     count: int = Field(default=5, ge=1, le=10)
 
 
+class SubscriptionCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=128)
+    queries: list[str] = Field(default_factory=list, max_length=10)
+    rss_feeds: list[str] = Field(default_factory=list, max_length=10)
+    sources: list[str] = Field(default_factory=lambda: ["hn", "devto", "reddit", "rss"])
+    interval_hours: int = Field(default=24, ge=1, le=24 * 7)
+    active: bool = True
+
+
+class SubscriptionUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    queries: list[str] | None = Field(default=None, max_length=10)
+    rss_feeds: list[str] | None = Field(default=None, max_length=10)
+    sources: list[str] | None = None
+    interval_hours: int | None = Field(default=None, ge=1, le=24 * 7)
+    active: bool | None = None
+
+
 class ScheduleRequest(BaseModel):
     scheduled_at: datetime
 
@@ -194,6 +212,101 @@ def research_suggest(req: ResearchSuggestRequest, _uid: str = Depends(current_us
     agent = SocialAgent()
     queries = agent.suggest_research_queries(req.product, n=req.count)
     return {"queries": queries}
+
+
+# --- research subscriptions -------------------------------------------------
+
+
+def _run_subscription(sub: dict) -> tuple[int, str | None]:
+    """Run a single subscription, return ``(fetched_count, error_message_or_None)``.
+
+    Errors are swallowed at the source level inside ``run_research`` (so a
+    flaky upstream doesn't crash the whole tick), but a top-level exception
+    here is recorded on the subscription so the user can see it in the UI.
+    """
+    try:
+        snippets = run_research(
+            ResearchRequest(
+                queries=list(sub.get("queries") or []),
+                rss_feeds=list(sub.get("rss_feeds") or []),
+                sources=list(sub.get("sources") or ["hn", "devto", "reddit", "rss"]),
+            )
+        )
+        store.upsert_snippets(sub["user_id"], snippets)
+        return len(snippets), None
+    except Exception as e:  # noqa: BLE001 — recorded against the subscription, not raised.
+        return 0, str(e)[:500]
+
+
+@app.post("/research/subscriptions", status_code=201)
+def subscription_create(req: SubscriptionCreateRequest, uid: str = Depends(current_user)):
+    if not req.queries and not req.rss_feeds:
+        raise HTTPException(400, "Provide at least one query or RSS feed.")
+    try:
+        sub = store.create_subscription(
+            uid,
+            name=req.name,
+            queries=req.queries,
+            rss_feeds=req.rss_feeds,
+            sources=req.sources,
+            interval_hours=req.interval_hours,
+            active=req.active,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return sub
+
+
+@app.get("/research/subscriptions")
+def subscription_list(uid: str = Depends(current_user)):
+    return store.list_subscriptions(uid)
+
+
+@app.patch("/research/subscriptions/{sub_id}")
+def subscription_update(
+    sub_id: str, req: SubscriptionUpdateRequest, uid: str = Depends(current_user)
+):
+    try:
+        sub = store.update_subscription(
+            uid,
+            sub_id,
+            name=req.name,
+            queries=req.queries,
+            rss_feeds=req.rss_feeds,
+            sources=req.sources,
+            interval_hours=req.interval_hours,
+            active=req.active,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if sub is None:
+        raise HTTPException(404, "Not found")
+    return sub
+
+
+@app.delete("/research/subscriptions/{sub_id}")
+def subscription_delete(sub_id: str, uid: str = Depends(current_user)):
+    if not store.delete_subscription(uid, sub_id):
+        raise HTTPException(404, "Not found")
+    return {"deleted": sub_id}
+
+
+@app.post("/research/tick")
+def research_tick(uid: str = Depends(current_user)):
+    """Run every due subscription belonging to the authed user, in sequence.
+
+    Cron-friendly: idempotent (skips subs that aren't due) and per-user
+    so the auth model stays simple. A platform-wide cron should call this
+    once per active user; for now the same authed user can hit it manually
+    from the UI to refresh.
+    """
+    due = store.due_subscriptions(user_id=uid)
+    ran: list[dict] = []
+    for sub in due:
+        fetched, error = _run_subscription(sub)
+        store.mark_subscription_run(sub["id"], fetched=fetched, error=error)
+        ran.append({"id": sub["id"], "name": sub["name"], "fetched": fetched, "error": error})
+    return {"ran": ran, "skipped": []}
 
 
 @app.post("/queue-bulk")

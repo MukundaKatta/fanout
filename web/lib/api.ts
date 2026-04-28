@@ -92,6 +92,44 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ product, count }),
       }),
+
+    subscriptions: {
+      list: () => request<ResearchSubscription[]>("/research/subscriptions"),
+      create: (input: {
+        name: string;
+        queries?: string[];
+        rss_feeds?: string[];
+        sources?: ResearchSource[];
+        interval_hours?: number;
+        active?: boolean;
+      }) =>
+        request<ResearchSubscription>("/research/subscriptions", {
+          method: "POST",
+          body: JSON.stringify(input),
+        }),
+      update: (id: string, patch: Partial<{
+        name: string;
+        queries: string[];
+        rss_feeds: string[];
+        sources: ResearchSource[];
+        interval_hours: number;
+        active: boolean;
+      }>) =>
+        request<ResearchSubscription>(`/research/subscriptions/${id}`, {
+          method: "PATCH",
+          body: JSON.stringify(patch),
+        }),
+      remove: (id: string) =>
+        request<{ deleted: string }>(`/research/subscriptions/${id}`, {
+          method: "DELETE",
+        }),
+    },
+
+    tick: () =>
+      request<{ ran: { id: string; name: string; fetched: number; error: string | null }[] }>(
+        "/research/tick",
+        { method: "POST" }
+      ),
   },
 };
 
@@ -138,5 +176,20 @@ export type ResearchSnippet = {
   score: number;
   published_at: string | null;
   used_in_draft_id: string | null;
+  created_at: string;
+};
+
+export type ResearchSubscription = {
+  id: string;
+  user_id: string;
+  name: string;
+  queries: string[];
+  rss_feeds: string[];
+  sources: ResearchSource[];
+  interval_hours: number;
+  active: boolean;
+  last_run_at: string | null;
+  last_fetched_count: number | null;
+  last_error: string | null;
   created_at: string;
 };

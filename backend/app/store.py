@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
 from app.db import session_scope
-from app.models import Draft, ResearchSnippet
+from app.models import Draft, ResearchSnippet, ResearchSubscription
 from app.research import Snippet
 
 
@@ -307,3 +307,162 @@ def mark_snippets_used(user_id: str, snippet_ids: list[str], draft_id: str) -> i
             row.used_in_draft_id = draft_id
             count += 1
     return count
+
+
+# ---------------------------------------------------------------------------
+# Research subscriptions — saved configs that the tick endpoint runs on cron.
+# ---------------------------------------------------------------------------
+
+
+# Server-side bounds on interval — keeps Groq quota predictable and stops a
+# user from configuring a 30s loop that hammers HN/Reddit.
+MIN_INTERVAL_HOURS = 1
+MAX_INTERVAL_HOURS = 24 * 7  # weekly is the longest we offer
+
+
+def create_subscription(
+    user_id: str,
+    *,
+    name: str,
+    queries: list[str],
+    rss_feeds: list[str],
+    sources: list[str] | None = None,
+    interval_hours: int = 24,
+    active: bool = True,
+) -> dict:
+    if not 1 <= len(name) <= 128:
+        raise ValueError("name must be 1-128 chars")
+    if not queries and not rss_feeds:
+        raise ValueError("subscription must have at least one query or rss_feed")
+    if not MIN_INTERVAL_HOURS <= interval_hours <= MAX_INTERVAL_HOURS:
+        raise ValueError(
+            f"interval_hours must be between {MIN_INTERVAL_HOURS} and {MAX_INTERVAL_HOURS}"
+        )
+    with session_scope() as s:
+        sub = ResearchSubscription(
+            user_id=user_id,
+            name=name,
+            queries=list(queries),
+            rss_feeds=list(rss_feeds),
+            sources=list(sources or ["hn", "devto", "reddit", "rss"]),
+            interval_hours=interval_hours,
+            active=active,
+        )
+        s.add(sub)
+        s.flush()
+        return sub.to_dict()
+
+
+def list_subscriptions(user_id: str) -> list[dict]:
+    with session_scope() as s:
+        stmt = (
+            select(ResearchSubscription)
+            .where(ResearchSubscription.user_id == user_id)
+            .order_by(ResearchSubscription.created_at.desc())
+        )
+        return [row.to_dict() for row in s.scalars(stmt)]
+
+
+def update_subscription(
+    user_id: str,
+    sub_id: str,
+    *,
+    name: str | None = None,
+    queries: list[str] | None = None,
+    rss_feeds: list[str] | None = None,
+    sources: list[str] | None = None,
+    interval_hours: int | None = None,
+    active: bool | None = None,
+) -> dict | None:
+    """Partial update — only the fields explicitly passed are written.
+
+    Returns the patched row, or ``None`` if it doesn't belong to ``user_id``.
+    """
+    if interval_hours is not None and not (
+        MIN_INTERVAL_HOURS <= interval_hours <= MAX_INTERVAL_HOURS
+    ):
+        raise ValueError(
+            f"interval_hours must be between {MIN_INTERVAL_HOURS} and {MAX_INTERVAL_HOURS}"
+        )
+    with session_scope() as s:
+        sub = s.get(ResearchSubscription, sub_id)
+        if sub is None or sub.user_id != user_id:
+            return None
+        if name is not None:
+            if not 1 <= len(name) <= 128:
+                raise ValueError("name must be 1-128 chars")
+            sub.name = name
+        if queries is not None:
+            sub.queries = list(queries)
+        if rss_feeds is not None:
+            sub.rss_feeds = list(rss_feeds)
+        if sources is not None:
+            sub.sources = list(sources)
+        if interval_hours is not None:
+            sub.interval_hours = interval_hours
+        if active is not None:
+            sub.active = active
+        # Validate post-patch — guards against an empty subscription after
+        # the user clears both lists in the UI.
+        if not sub.queries and not sub.rss_feeds:
+            raise ValueError("subscription must have at least one query or rss_feed")
+        s.flush()
+        return sub.to_dict()
+
+
+def delete_subscription(user_id: str, sub_id: str) -> bool:
+    with session_scope() as s:
+        sub = s.get(ResearchSubscription, sub_id)
+        if sub is None or sub.user_id != user_id:
+            return False
+        s.delete(sub)
+        return True
+
+
+def due_subscriptions(*, user_id: str | None = None, now: datetime | None = None) -> list[dict]:
+    """Return active subscriptions whose ``last_run_at`` is older than ``interval_hours``.
+
+    Pass ``user_id=None`` from a cron tick to fan out across every user; pass
+    a value from a per-user manual tick. Sub rows that have never run
+    (``last_run_at IS NULL``) are always considered due.
+    """
+    now = now or datetime.now(timezone.utc)
+    with session_scope() as s:
+        stmt = select(ResearchSubscription).where(ResearchSubscription.active.is_(True))
+        if user_id is not None:
+            stmt = stmt.where(ResearchSubscription.user_id == user_id)
+        out: list[dict] = []
+        for sub in s.scalars(stmt):
+            if sub.last_run_at is None:
+                out.append(sub.to_dict())
+                continue
+            # Treat naive timestamps as UTC — sqlite drops the tz on the way
+            # back out of storage even though we wrote a tz-aware value.
+            last = (
+                sub.last_run_at.replace(tzinfo=timezone.utc)
+                if sub.last_run_at.tzinfo is None
+                else sub.last_run_at
+            )
+            if now - last >= timedelta(hours=sub.interval_hours):
+                out.append(sub.to_dict())
+        return out
+
+
+def mark_subscription_run(
+    sub_id: str,
+    *,
+    fetched: int,
+    error: str | None = None,
+    when: datetime | None = None,
+) -> dict | None:
+    """Record a tick — bump ``last_run_at`` so the next due check skips this row."""
+    when = when or datetime.now(timezone.utc)
+    with session_scope() as s:
+        sub = s.get(ResearchSubscription, sub_id)
+        if sub is None:
+            return None
+        sub.last_run_at = when
+        sub.last_fetched_count = fetched
+        sub.last_error = error
+        s.flush()
+        return sub.to_dict()

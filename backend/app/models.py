@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, Float, Index, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -122,5 +122,64 @@ class ResearchSnippet(Base):
             "score": self.score,
             "published_at": self.published_at.isoformat() if self.published_at else None,
             "used_in_draft_id": self.used_in_draft_id,
+            "created_at": self.created_at.isoformat(),
+        }
+
+
+class ResearchSubscription(Base):
+    """A saved research configuration that runs autonomously on an interval.
+
+    Turns the workbench from a manual tool into the actual compounding loop —
+    set a subscription with a few queries / RSS feeds and an interval, and a
+    cron-driven ``/research/tick`` endpoint will run them for you so banked
+    snippets stay fresh without manual clicks.
+
+    The tick endpoint (see ``store.due_subscriptions`` + ``main.research_tick``)
+    uses ``last_run_at`` to skip subs that aren't due yet — so it's safe to
+    poke every minute from a Vercel/Render cron without rate-burning Groq.
+    """
+
+    __tablename__ = "research_subscriptions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+
+    name: Mapped[str] = mapped_column(String(128))
+    queries: Mapped[list] = mapped_column(JSON, default=list)
+    rss_feeds: Mapped[list] = mapped_column(JSON, default=list)
+    sources: Mapped[list] = mapped_column(JSON, default=lambda: ["hn", "devto", "reddit", "rss"])
+
+    # 1 = hourly, 24 = daily, 168 = weekly. Bounded server-side.
+    interval_hours: Mapped[int] = mapped_column(Integer, default=24)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_fetched_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        # ``due_subscriptions`` filters by (active, last_run_at) — keeping the
+        # composite index hot lets cron polls stay sub-ms even at scale.
+        Index("ix_research_subs_active_lastrun", "active", "last_run_at"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "name": self.name,
+            "queries": list(self.queries or []),
+            "rss_feeds": list(self.rss_feeds or []),
+            "sources": list(self.sources or []),
+            "interval_hours": self.interval_hours,
+            "active": self.active,
+            "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
+            "last_fetched_count": self.last_fetched_count,
+            "last_error": self.last_error,
             "created_at": self.created_at.isoformat(),
         }
