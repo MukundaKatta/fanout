@@ -97,6 +97,33 @@ Snippets are scored by upstream popularity × recency (48h half-life), deduped
 per `(user_id, url)`, and marked **used** the first time they feed into a
 draft so the next research run pulls fresh material.
 
+### Autonomous loop (recurring subscriptions)
+
+Save a query/feed config once and let it refresh on its own:
+
+```bash
+# create a daily subscription
+curl -X POST http://localhost:8000/research/subscriptions \
+  -H 'content-type: application/json' \
+  -d '{"name":"AI agents","queries":["ai agents","llm tooling"],"interval_hours":24}'
+
+# tick the loop — runs every active subscription that's due
+curl -X POST http://localhost:8000/research/tick
+```
+
+Wire `POST /research/tick` to **any** scheduler — Vercel cron, Render scheduled
+job, or the bundled GitHub Action at `.github/workflows/research-tick.yml`.
+
+To enable the GitHub Action:
+
+1. Set repo **Variable** `RESEARCH_TICK_ENABLED = "true"`
+2. Set repo **Secret** `RESEARCH_TICK_URL` to your deployed `/research/tick` URL
+3. (Optional) Set repo **Secret** `RESEARCH_TICK_TOKEN` if your backend requires
+   a Supabase Bearer token
+
+The action runs hourly. The tick endpoint is idempotent — subscriptions that
+aren't due yet are skipped server-side, so over-polling is safe.
+
 ## Deploying the web app
 
 **Easy mode — Vercel native git integration (recommended):**
