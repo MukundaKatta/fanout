@@ -41,7 +41,21 @@ def build_review_checkpoint(draft: dict, confidence: float) -> dict:
     }
 
 
-def save_drafts(user_id: str, product: str, result: dict) -> list[dict]:
+def save_drafts(
+    user_id: str,
+    product: str,
+    result: dict,
+    *,
+    cited_snippet_ids: list[str] | None = None,
+) -> list[dict]:
+    """Persist drafts produced by ``agent.run``.
+
+    ``cited_snippet_ids`` records which research snippets fed the prompt for
+    *every* draft produced in this run — same set per platform because the
+    plan + research context were shared across all of them. Pass ``None`` /
+    empty for runs that didn't use research.
+    """
+    cited = list(cited_snippet_ids or []) or None
     out = []
     with session_scope() as s:
         for platform, bundle in result["posts"].items():
@@ -53,6 +67,7 @@ def save_drafts(user_id: str, product: str, result: dict) -> list[dict]:
                 feedback=bundle["feedback"],
                 plan=result["plan"],
                 status="pending",
+                cited_snippet_ids=cited,
             )
             s.add(d)
             s.flush()
@@ -60,8 +75,20 @@ def save_drafts(user_id: str, product: str, result: dict) -> list[dict]:
     return out
 
 
-def save_variations(user_id: str, product: str, platform: str, variations: list[dict]) -> list[dict]:
-    """Save N variation drafts (from agent.variations()) for a single platform."""
+def save_variations(
+    user_id: str,
+    product: str,
+    platform: str,
+    variations: list[dict],
+    *,
+    cited_snippet_ids: list[str] | None = None,
+) -> list[dict]:
+    """Save N variation drafts (from agent.variations()) for a single platform.
+
+    ``cited_snippet_ids`` is shared across all variations — the research
+    context is the same set of signals, the variations differ only by angle.
+    """
+    cited = list(cited_snippet_ids or []) or None
     out = []
     with session_scope() as s:
         for v in variations:
@@ -73,11 +100,33 @@ def save_variations(user_id: str, product: str, platform: str, variations: list[
                 feedback=v.get("angle"),  # store the angle in 'feedback' for visibility
                 plan=None,
                 status="pending",
+                cited_snippet_ids=cited,
             )
             s.add(d)
             s.flush()
             out.append(d.to_dict())
     return out
+
+
+def get_draft_citations(user_id: str, draft_id: str) -> list[dict] | None:
+    """Return the snippet rows cited by a draft, or ``None`` if the draft
+    doesn't belong to ``user_id`` (auth failure looks like 404)."""
+    with session_scope() as s:
+        d = s.get(Draft, draft_id)
+        if d is None or d.user_id != user_id:
+            return None
+        ids = list(d.cited_snippet_ids or [])
+        if not ids:
+            return []
+        # Single SELECT — preserve the order they were saved by re-sorting on
+        # the original list rather than the DB's natural order.
+        rows = list(
+            s.scalars(
+                select(ResearchSnippet).where(ResearchSnippet.id.in_(ids))
+            )
+        )
+        by_id = {r.id: r for r in rows}
+        return [by_id[i].to_dict() for i in ids if i in by_id]
 
 
 def list_drafts(user_id: str, status: str | None = None) -> list[dict]:
