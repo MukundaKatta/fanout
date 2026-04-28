@@ -63,6 +63,11 @@ class ResearchRunRequest(BaseModel):
     per_source_limit: int = Field(default=10, ge=1, le=25)
 
 
+class ResearchSuggestRequest(BaseModel):
+    product: str = Field(..., min_length=10, max_length=8000)
+    count: int = Field(default=5, ge=1, le=10)
+
+
 class ScheduleRequest(BaseModel):
     scheduled_at: datetime
 
@@ -176,6 +181,19 @@ def research_list(
     uid: str = Depends(current_user),
 ):
     return store.list_snippets(uid, source=source, only_unused=only_unused, limit=limit)
+
+
+@app.post("/research/suggest")
+def research_suggest(req: ResearchSuggestRequest, _uid: str = Depends(current_user)):
+    """Suggest research queries from a product blurb.
+
+    Cheap (~1s) read-only call — no DB writes — so it's safe to wire to a
+    button on the workbench that the user might click before banking
+    anything. ``_uid`` is required so anon callers can't burn Groq quota.
+    """
+    agent = SocialAgent()
+    queries = agent.suggest_research_queries(req.product, n=req.count)
+    return {"queries": queries}
 
 
 @app.post("/queue-bulk")
