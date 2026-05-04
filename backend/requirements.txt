@@ -1,7 +1,7 @@
 fastapi>=0.136.1
 uvicorn[standard]>=0.32.0
 groq>=1.2.0
-python-dotenv>=1.0.0
+python-dotenv>=1.2.2
 trafilatura>=2.0.0
 pydantic>=2.13.3
 sqlalchemy>=2.0.49
