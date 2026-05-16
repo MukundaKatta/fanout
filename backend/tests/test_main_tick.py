@@ -124,3 +124,54 @@ def test_subscription_create_rejects_empty():
     client = TestClient(main.app)
     res = client.post("/research/subscriptions", json={"name": "x"})
     assert res.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# /research/tick/all — service-auth fan-out for cron
+# ---------------------------------------------------------------------------
+
+
+def test_tick_all_403_when_secret_unset(monkeypatch):
+    monkeypatch.delenv("RESEARCH_TICK_SECRET", raising=False)
+    client = TestClient(main.app)
+    res = client.post("/research/tick/all", headers={"X-Tick-Secret": "anything"})
+    assert res.status_code == 403
+    assert "disabled" in res.json()["detail"].lower()
+
+
+def test_tick_all_403_on_wrong_secret(monkeypatch):
+    monkeypatch.setenv("RESEARCH_TICK_SECRET", "the-right-one")
+    client = TestClient(main.app)
+    res = client.post("/research/tick/all", headers={"X-Tick-Secret": "wrong"})
+    assert res.status_code == 403
+
+
+def test_tick_all_403_when_header_missing(monkeypatch):
+    monkeypatch.setenv("RESEARCH_TICK_SECRET", "the-right-one")
+    client = TestClient(main.app)
+    res = client.post("/research/tick/all")
+    assert res.status_code == 403
+
+
+def test_tick_all_runs_across_users(monkeypatch):
+    monkeypatch.setenv("RESEARCH_TICK_SECRET", "service-cron-token")
+    client = _client(monkeypatch)
+
+    # Two subs, two distinct users — both due (never run).
+    sub_a = store.create_subscription(
+        "user-alpha", name="alpha", queries=["q"], rss_feeds=[], interval_hours=1
+    )
+    sub_b = store.create_subscription(
+        "user-beta", name="beta", queries=["q"], rss_feeds=[], interval_hours=1
+    )
+
+    res = client.post(
+        "/research/tick/all", headers={"X-Tick-Secret": "service-cron-token"}
+    )
+    assert res.status_code == 200
+    body = res.json()
+    user_ids = sorted(r["user_id"] for r in body["ran"])
+    assert user_ids == sorted(["user-alpha", "user-beta"])
+
+    ran_ids = sorted(r["id"] for r in body["ran"])
+    assert ran_ids == sorted([sub_a["id"], sub_b["id"]])

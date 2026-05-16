@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -12,7 +13,7 @@ from dotenv import load_dotenv
 # Load .env from the backend root regardless of cwd.
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-from fastapi import Depends, FastAPI, HTTPException  # noqa: E402
+from fastapi import Depends, FastAPI, Header, HTTPException  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
@@ -151,9 +152,11 @@ def generate(req: GenerateRequest, uid: str = Depends(current_user)):
     research_block, snippet_ids = _build_research_context(uid, enabled=req.use_research)
     agent = SocialAgent()
     result = agent.run(req.product, platforms=tuple(req.platforms), research_context=research_block)
-    drafts = store.save_drafts(uid, req.product, result)
-    # Mark every consumed snippet against the *first* draft — keeps the
-    # used/unused signal accurate without needing per-platform attribution.
+    drafts = store.save_drafts(uid, req.product, result, cited_snippet_ids=snippet_ids)
+    # Snippets are stamped with the *first* draft for the legacy used_in_draft_id
+    # field (kept for back-compat with the snippet list filter), but the canonical
+    # attribution lives on each draft's ``cited_snippet_ids`` JSON column — so
+    # GET /drafts/<id>/citations works for *every* draft in the run, not just one.
     if snippet_ids and drafts:
         store.mark_snippets_used(uid, snippet_ids, drafts[0]["id"])
     return {"plan": result["plan"], "drafts": drafts, "research_used": len(snippet_ids)}
@@ -166,7 +169,9 @@ def variations(req: VariationsRequest, uid: str = Depends(current_user)):
     research_block, snippet_ids = _build_research_context(uid, enabled=req.use_research)
     agent = SocialAgent()
     items = agent.variations(req.product, req.platform, n=req.count, research_context=research_block)
-    drafts = store.save_variations(uid, req.product, req.platform, items)
+    drafts = store.save_variations(
+        uid, req.product, req.platform, items, cited_snippet_ids=snippet_ids
+    )
     if snippet_ids and drafts:
         store.mark_snippets_used(uid, snippet_ids, drafts[0]["id"])
     return {"drafts": drafts, "research_used": len(snippet_ids)}
@@ -295,10 +300,9 @@ def subscription_delete(sub_id: str, uid: str = Depends(current_user)):
 def research_tick(uid: str = Depends(current_user)):
     """Run every due subscription belonging to the authed user, in sequence.
 
-    Cron-friendly: idempotent (skips subs that aren't due) and per-user
-    so the auth model stays simple. A platform-wide cron should call this
-    once per active user; for now the same authed user can hit it manually
-    from the UI to refresh.
+    Per-user, idempotent (skips subs that aren't due). Used by the workbench
+    "Run due now" button. For a platform-wide cron, see ``/research/tick/all``
+    which auths via service secret and fans out across every user.
     """
     due = store.due_subscriptions(user_id=uid)
     ran: list[dict] = []
@@ -306,6 +310,41 @@ def research_tick(uid: str = Depends(current_user)):
         fetched, error = _run_subscription(sub)
         store.mark_subscription_run(sub["id"], fetched=fetched, error=error)
         ran.append({"id": sub["id"], "name": sub["name"], "fetched": fetched, "error": error})
+    return {"ran": ran, "skipped": []}
+
+
+@app.post("/research/tick/all")
+def research_tick_all(x_tick_secret: str | None = Header(default=None)):
+    """Service-auth tick — runs every due subscription across **all** users.
+
+    Auths via the ``X-Tick-Secret`` header rather than a user JWT, so a single
+    GitHub Action / Vercel cron / Render scheduled job can drive the loop for
+    everyone with one secret. Falls back to 403 when ``RESEARCH_TICK_SECRET``
+    isn't set on the server, so the endpoint is **off by default**.
+    """
+    expected = os.environ.get("RESEARCH_TICK_SECRET")
+    if not expected:
+        raise HTTPException(
+            403, "Service tick disabled — set RESEARCH_TICK_SECRET on the backend to enable."
+        )
+    # Constant-time compare to dodge timing-side-channel guesses on the secret.
+    if not x_tick_secret or not secrets.compare_digest(x_tick_secret, expected):
+        raise HTTPException(403, "Invalid X-Tick-Secret header")
+
+    due = store.due_subscriptions()  # no user filter → all active subs
+    ran: list[dict] = []
+    for sub in due:
+        fetched, error = _run_subscription(sub)
+        store.mark_subscription_run(sub["id"], fetched=fetched, error=error)
+        ran.append(
+            {
+                "id": sub["id"],
+                "user_id": sub["user_id"],
+                "name": sub["name"],
+                "fetched": fetched,
+                "error": error,
+            }
+        )
     return {"ran": ran, "skipped": []}
 
 
@@ -330,6 +369,20 @@ def get_draft(draft_id: str, uid: str = Depends(current_user)):
     if not d:
         raise HTTPException(404, "Not found")
     return d
+
+
+@app.get("/drafts/{draft_id}/citations")
+def draft_citations(draft_id: str, uid: str = Depends(current_user)):
+    """Return the research snippets that fed this draft's prompt.
+
+    Empty list when the draft was generated without research grounding.
+    Same 404 shape as ``/drafts/{id}`` for non-owned drafts so the auth
+    leak surface is identical.
+    """
+    snippets = store.get_draft_citations(uid, draft_id)
+    if snippets is None:
+        raise HTTPException(404, "Not found")
+    return {"draft_id": draft_id, "snippets": snippets}
 
 
 @app.get("/platforms/{platform}/adapter")
