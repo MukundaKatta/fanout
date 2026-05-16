@@ -27,6 +27,7 @@ import Marquee from "@/components/Marquee";
 import Spotlight from "@/components/Spotlight";
 import AnimatedNumber from "@/components/AnimatedNumber";
 import Typewriter from "@/components/Typewriter";
+import { CitationsPill } from "@/components/CitationsPill";
 
 export default function Home() {
   const [product, setProduct] = useState("");
@@ -435,6 +436,12 @@ export default function Home() {
                             <span className="badge bg-white/5 text-white/60 ring-1 ring-white/10">
                               {d.feedback}
                             </span>
+                          )}
+                          {d.cited_snippet_ids && d.cited_snippet_ids.length > 0 && (
+                            <CitationsPill
+                              draftId={d.id}
+                              count={d.cited_snippet_ids.length}
+                            />
                           )}
                         </div>
                         <span className="text-[11px] tabular-nums text-white/40">

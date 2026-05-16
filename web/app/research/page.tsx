@@ -13,17 +13,22 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
+  Bookmark,
+  Clock,
   ExternalLink,
   Loader2,
   Newspaper,
+  Pause,
+  Play,
   Plus,
   RefreshCw,
   Search,
   Sparkles,
   Trash2,
   Wand2,
+  Zap,
 } from "lucide-react";
-import { api, ResearchSnippet, ResearchSource } from "@/lib/api";
+import { api, ResearchSnippet, ResearchSource, ResearchSubscription } from "@/lib/api";
 
 const ALL_SOURCES: ResearchSource[] = ["hn", "devto", "reddit", "rss"];
 
@@ -51,6 +56,100 @@ export default function ResearchPage() {
   const [suggestProduct, setSuggestProduct] = useState("");
   const [suggesting, setSuggesting] = useState(false);
   const [suggestionsApplied, setSuggestionsApplied] = useState(false);
+
+  // Subscriptions — saved configs that the /research/tick endpoint runs on
+  // a cron. Loaded alongside snippets; updates are optimistic-by-refresh.
+  const [subs, setSubs] = useState<ResearchSubscription[]>([]);
+  const [subsLoading, setSubsLoading] = useState(true);
+  const [subName, setSubName] = useState("");
+  const [subInterval, setSubInterval] = useState(24);
+  const [savingSub, setSavingSub] = useState(false);
+  const [ticking, setTicking] = useState(false);
+  const [tickResult, setTickResult] = useState<string | null>(null);
+
+  const refreshSubs = async () => {
+    setSubsLoading(true);
+    try {
+      setSubs(await api.research.subscriptions.list());
+    } catch {
+      // Older backend → leave the panel empty rather than error-flashing.
+      setSubs([]);
+    } finally {
+      setSubsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshSubs();
+  }, []);
+
+  const saveCurrentAsSubscription = async () => {
+    const cleanQueries = queries.map((q) => q.trim()).filter(Boolean);
+    const cleanFeeds = feeds.map((f) => f.trim()).filter(Boolean);
+    if (cleanQueries.length === 0 && cleanFeeds.length === 0) {
+      setError("Add at least one query or RSS feed before saving.");
+      return;
+    }
+    if (!subName.trim()) {
+      setError("Name your subscription so you can find it later.");
+      return;
+    }
+    setSavingSub(true);
+    setError(null);
+    try {
+      await api.research.subscriptions.create({
+        name: subName.trim(),
+        queries: cleanQueries,
+        rss_feeds: cleanFeeds,
+        interval_hours: subInterval,
+      });
+      setSubName("");
+      await refreshSubs();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingSub(false);
+    }
+  };
+
+  const toggleSubActive = async (sub: ResearchSubscription) => {
+    try {
+      await api.research.subscriptions.update(sub.id, { active: !sub.active });
+      await refreshSubs();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const deleteSub = async (sub: ResearchSubscription) => {
+    try {
+      await api.research.subscriptions.remove(sub.id);
+      await refreshSubs();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const runTick = async () => {
+    setTicking(true);
+    setError(null);
+    setTickResult(null);
+    try {
+      const out = await api.research.tick();
+      const totalFetched = out.ran.reduce((acc, r) => acc + r.fetched, 0);
+      setTickResult(
+        out.ran.length === 0
+          ? "Nothing was due."
+          : `Ran ${out.ran.length} subscription${out.ran.length === 1 ? "" : "s"}, fetched ${totalFetched} snippet${totalFetched === 1 ? "" : "s"}.`
+      );
+      await Promise.all([refresh(), refreshSubs()]);
+      setTimeout(() => setTickResult(null), 4000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTicking(false);
+    }
+  };
 
   const suggestQueries = async () => {
     if (suggestProduct.trim().length < 10) {
@@ -285,7 +384,7 @@ export default function ResearchPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-3 pt-2">
+        <div className="flex flex-wrap items-center gap-3 pt-2">
           <button
             onClick={runResearch}
             disabled={running}
@@ -294,12 +393,90 @@ export default function ResearchPage() {
             {running ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
             {running ? "Fetching..." : "Run research"}
           </button>
+
+          {/* Save the current form as a recurring subscription. Lives next to
+              the run button so the action is in the user's eyeline once they've
+              dialled in queries that work. */}
+          <div className="flex items-center gap-2 ml-auto">
+            <input
+              value={subName}
+              onChange={(e) => setSubName(e.target.value)}
+              placeholder="Subscription name"
+              className="rounded-lg bg-black/40 border border-white/10 px-2.5 py-1.5 text-xs w-44 focus:outline-none focus:border-violet-400/50"
+            />
+            <select
+              value={subInterval}
+              onChange={(e) => setSubInterval(Number(e.target.value))}
+              className="rounded-lg bg-black/40 border border-white/10 px-2 py-1.5 text-xs focus:outline-none focus:border-violet-400/50"
+            >
+              <option value={1}>every hour</option>
+              <option value={6}>every 6h</option>
+              <option value={12}>every 12h</option>
+              <option value={24}>daily</option>
+              <option value={168}>weekly</option>
+            </select>
+            <button
+              onClick={saveCurrentAsSubscription}
+              disabled={savingSub}
+              className="rounded-lg border border-white/10 px-3 py-1.5 text-xs font-medium hover:bg-white/5 disabled:opacity-50 inline-flex items-center gap-1.5"
+            >
+              {savingSub ? <Loader2 size={12} className="animate-spin" /> : <Bookmark size={12} />}
+              Save as subscription
+            </button>
+          </div>
+
           {lastFetched != null && !running && (
             <span className="text-xs text-white/50">
               Last run: {lastFetched} snippets fetched
             </span>
           )}
         </div>
+      </section>
+
+      {/* Subscriptions panel */}
+      <section className="rounded-xl border border-white/10 bg-white/[0.03] p-5 mb-8">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <Clock size={14} className="text-violet-300" />
+            Recurring subscriptions
+            <span className="text-xs text-white/50 font-normal">
+              {subs.filter((s) => s.active).length} active
+            </span>
+          </h2>
+          <button
+            onClick={runTick}
+            disabled={ticking || subs.filter((s) => s.active).length === 0}
+            className="rounded-lg border border-violet-400/30 bg-violet-500/15 px-3 py-1.5 text-xs font-medium hover:bg-violet-500/25 disabled:opacity-40 inline-flex items-center gap-1.5"
+          >
+            {ticking ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />}
+            {ticking ? "Running..." : "Run due now"}
+          </button>
+        </div>
+
+        {tickResult && (
+          <div className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200 mb-3">
+            {tickResult}
+          </div>
+        )}
+
+        {subsLoading ? (
+          <div className="text-xs text-white/40 text-center py-4">Loading...</div>
+        ) : subs.length === 0 ? (
+          <p className="text-xs text-white/50 text-center py-4">
+            No subscriptions yet. Configure queries above and save them with a name to run them automatically.
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {subs.map((s) => (
+              <SubscriptionRow
+                key={s.id}
+                sub={s}
+                onToggle={() => void toggleSubActive(s)}
+                onDelete={() => void deleteSub(s)}
+              />
+            ))}
+          </ul>
+        )}
       </section>
 
       <section>
@@ -398,6 +575,89 @@ function SnippetRow({ snippet }: { snippet: ResearchSnippet }) {
       {snippet.snippet && (
         <p className="text-xs text-white/60 mt-1 line-clamp-2">{snippet.snippet}</p>
       )}
+    </li>
+  );
+}
+
+function SubscriptionRow({
+  sub,
+  onToggle,
+  onDelete,
+}: {
+  sub: ResearchSubscription;
+  onToggle: () => void;
+  onDelete: () => void;
+}) {
+  const intervalLabel =
+    sub.interval_hours === 1
+      ? "every hour"
+      : sub.interval_hours === 24
+      ? "daily"
+      : sub.interval_hours === 168
+      ? "weekly"
+      : `every ${sub.interval_hours}h`;
+
+  return (
+    <li
+      className={`rounded-lg border border-white/[0.08] bg-black/20 px-3 py-2.5 ${
+        sub.active ? "" : "opacity-60"
+      }`}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium truncate">{sub.name}</span>
+            <span className="text-[10px] font-mono text-white/40 uppercase">
+              {intervalLabel}
+            </span>
+            {!sub.active && (
+              <span className="text-[10px] font-mono text-amber-300/80 uppercase">paused</span>
+            )}
+          </div>
+          <div className="text-xs text-white/50 truncate mt-0.5">
+            {sub.queries.length > 0 && <>{sub.queries.join(" · ")}</>}
+            {sub.queries.length > 0 && sub.rss_feeds.length > 0 && <> · </>}
+            {sub.rss_feeds.length > 0 && (
+              <span className="text-white/40">
+                {sub.rss_feeds.length} feed{sub.rss_feeds.length === 1 ? "" : "s"}
+              </span>
+            )}
+          </div>
+          {(sub.last_run_at || sub.last_error) && (
+            <div className="text-[10px] text-white/40 mt-1 font-mono">
+              {sub.last_error ? (
+                <span className="text-rose-300/80">last error: {sub.last_error}</span>
+              ) : (
+                <>
+                  last run{" "}
+                  <time dateTime={sub.last_run_at!}>
+                    {new Date(sub.last_run_at!).toLocaleString()}
+                  </time>
+                  {sub.last_fetched_count != null && <> · {sub.last_fetched_count} fetched</>}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={onToggle}
+            className="p-1.5 rounded text-white/50 hover:text-white hover:bg-white/5"
+            aria-label={sub.active ? "Pause subscription" : "Resume subscription"}
+            title={sub.active ? "Pause" : "Resume"}
+          >
+            {sub.active ? <Pause size={12} /> : <Play size={12} />}
+          </button>
+          <button
+            onClick={onDelete}
+            className="p-1.5 rounded text-white/40 hover:text-rose-300 hover:bg-rose-500/10"
+            aria-label="Delete subscription"
+            title="Delete"
+          >
+            <Trash2 size={12} />
+          </button>
+        </div>
+      </div>
     </li>
   );
 }
