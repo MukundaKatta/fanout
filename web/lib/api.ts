@@ -65,6 +65,10 @@ export const api = {
     }),
   cancelSchedule: (id: string) =>
     request<Draft>(`/drafts/${id}/schedule`, { method: "DELETE" }),
+  citations: (id: string) =>
+    request<{ draft_id: string; snippets: ResearchSnippet[] }>(
+      `/drafts/${id}/citations`
+    ),
   me: () => request<{ user_id: string }>("/me"),
 
   // --- research loop ---------------------------------------------------------
@@ -160,6 +164,9 @@ export type Draft = {
   scheduled_at: string | null;
   post_url?: string | null;
   error?: string | null;
+  // IDs of research snippets that fed this draft's prompt. Empty when the
+  // draft was generated without research grounding.
+  cited_snippet_ids?: string[];
   created_at: string;
 };
 
