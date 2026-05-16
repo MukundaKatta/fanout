@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -12,7 +13,7 @@ from dotenv import load_dotenv
 # Load .env from the backend root regardless of cwd.
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-from fastapi import Depends, FastAPI, HTTPException  # noqa: E402
+from fastapi import Depends, FastAPI, Header, HTTPException  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
@@ -61,6 +62,29 @@ class ResearchRunRequest(BaseModel):
     rss_feeds: list[str] = Field(default_factory=list, max_length=10)
     sources: list[str] = Field(default_factory=lambda: ["hn", "devto", "reddit", "rss"])
     per_source_limit: int = Field(default=10, ge=1, le=25)
+
+
+class ResearchSuggestRequest(BaseModel):
+    product: str = Field(..., min_length=10, max_length=8000)
+    count: int = Field(default=5, ge=1, le=10)
+
+
+class SubscriptionCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=128)
+    queries: list[str] = Field(default_factory=list, max_length=10)
+    rss_feeds: list[str] = Field(default_factory=list, max_length=10)
+    sources: list[str] = Field(default_factory=lambda: ["hn", "devto", "reddit", "rss"])
+    interval_hours: int = Field(default=24, ge=1, le=24 * 7)
+    active: bool = True
+
+
+class SubscriptionUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    queries: list[str] | None = Field(default=None, max_length=10)
+    rss_feeds: list[str] | None = Field(default=None, max_length=10)
+    sources: list[str] | None = None
+    interval_hours: int | None = Field(default=None, ge=1, le=24 * 7)
+    active: bool | None = None
 
 
 class ScheduleRequest(BaseModel):
@@ -128,9 +152,11 @@ def generate(req: GenerateRequest, uid: str = Depends(current_user)):
     research_block, snippet_ids = _build_research_context(uid, enabled=req.use_research)
     agent = SocialAgent()
     result = agent.run(req.product, platforms=tuple(req.platforms), research_context=research_block)
-    drafts = store.save_drafts(uid, req.product, result)
-    # Mark every consumed snippet against the *first* draft — keeps the
-    # used/unused signal accurate without needing per-platform attribution.
+    drafts = store.save_drafts(uid, req.product, result, cited_snippet_ids=snippet_ids)
+    # Snippets are stamped with the *first* draft for the legacy used_in_draft_id
+    # field (kept for back-compat with the snippet list filter), but the canonical
+    # attribution lives on each draft's ``cited_snippet_ids`` JSON column — so
+    # GET /drafts/<id>/citations works for *every* draft in the run, not just one.
     if snippet_ids and drafts:
         store.mark_snippets_used(uid, snippet_ids, drafts[0]["id"])
     return {"plan": result["plan"], "drafts": drafts, "research_used": len(snippet_ids)}
@@ -143,7 +169,9 @@ def variations(req: VariationsRequest, uid: str = Depends(current_user)):
     research_block, snippet_ids = _build_research_context(uid, enabled=req.use_research)
     agent = SocialAgent()
     items = agent.variations(req.product, req.platform, n=req.count, research_context=research_block)
-    drafts = store.save_variations(uid, req.product, req.platform, items)
+    drafts = store.save_variations(
+        uid, req.product, req.platform, items, cited_snippet_ids=snippet_ids
+    )
     if snippet_ids and drafts:
         store.mark_snippets_used(uid, snippet_ids, drafts[0]["id"])
     return {"drafts": drafts, "research_used": len(snippet_ids)}
@@ -178,6 +206,148 @@ def research_list(
     return store.list_snippets(uid, source=source, only_unused=only_unused, limit=limit)
 
 
+@app.post("/research/suggest")
+def research_suggest(req: ResearchSuggestRequest, _uid: str = Depends(current_user)):
+    """Suggest research queries from a product blurb.
+
+    Cheap (~1s) read-only call — no DB writes — so it's safe to wire to a
+    button on the workbench that the user might click before banking
+    anything. ``_uid`` is required so anon callers can't burn Groq quota.
+    """
+    agent = SocialAgent()
+    queries = agent.suggest_research_queries(req.product, n=req.count)
+    return {"queries": queries}
+
+
+# --- research subscriptions -------------------------------------------------
+
+
+def _run_subscription(sub: dict) -> tuple[int, str | None]:
+    """Run a single subscription, return ``(fetched_count, error_message_or_None)``.
+
+    Errors are swallowed at the source level inside ``run_research`` (so a
+    flaky upstream doesn't crash the whole tick), but a top-level exception
+    here is recorded on the subscription so the user can see it in the UI.
+    """
+    try:
+        snippets = run_research(
+            ResearchRequest(
+                queries=list(sub.get("queries") or []),
+                rss_feeds=list(sub.get("rss_feeds") or []),
+                sources=list(sub.get("sources") or ["hn", "devto", "reddit", "rss"]),
+            )
+        )
+        store.upsert_snippets(sub["user_id"], snippets)
+        return len(snippets), None
+    except Exception as e:  # noqa: BLE001 — recorded against the subscription, not raised.
+        return 0, str(e)[:500]
+
+
+@app.post("/research/subscriptions", status_code=201)
+def subscription_create(req: SubscriptionCreateRequest, uid: str = Depends(current_user)):
+    if not req.queries and not req.rss_feeds:
+        raise HTTPException(400, "Provide at least one query or RSS feed.")
+    try:
+        sub = store.create_subscription(
+            uid,
+            name=req.name,
+            queries=req.queries,
+            rss_feeds=req.rss_feeds,
+            sources=req.sources,
+            interval_hours=req.interval_hours,
+            active=req.active,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return sub
+
+
+@app.get("/research/subscriptions")
+def subscription_list(uid: str = Depends(current_user)):
+    return store.list_subscriptions(uid)
+
+
+@app.patch("/research/subscriptions/{sub_id}")
+def subscription_update(
+    sub_id: str, req: SubscriptionUpdateRequest, uid: str = Depends(current_user)
+):
+    try:
+        sub = store.update_subscription(
+            uid,
+            sub_id,
+            name=req.name,
+            queries=req.queries,
+            rss_feeds=req.rss_feeds,
+            sources=req.sources,
+            interval_hours=req.interval_hours,
+            active=req.active,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if sub is None:
+        raise HTTPException(404, "Not found")
+    return sub
+
+
+@app.delete("/research/subscriptions/{sub_id}")
+def subscription_delete(sub_id: str, uid: str = Depends(current_user)):
+    if not store.delete_subscription(uid, sub_id):
+        raise HTTPException(404, "Not found")
+    return {"deleted": sub_id}
+
+
+@app.post("/research/tick")
+def research_tick(uid: str = Depends(current_user)):
+    """Run every due subscription belonging to the authed user, in sequence.
+
+    Per-user, idempotent (skips subs that aren't due). Used by the workbench
+    "Run due now" button. For a platform-wide cron, see ``/research/tick/all``
+    which auths via service secret and fans out across every user.
+    """
+    due = store.due_subscriptions(user_id=uid)
+    ran: list[dict] = []
+    for sub in due:
+        fetched, error = _run_subscription(sub)
+        store.mark_subscription_run(sub["id"], fetched=fetched, error=error)
+        ran.append({"id": sub["id"], "name": sub["name"], "fetched": fetched, "error": error})
+    return {"ran": ran, "skipped": []}
+
+
+@app.post("/research/tick/all")
+def research_tick_all(x_tick_secret: str | None = Header(default=None)):
+    """Service-auth tick — runs every due subscription across **all** users.
+
+    Auths via the ``X-Tick-Secret`` header rather than a user JWT, so a single
+    GitHub Action / Vercel cron / Render scheduled job can drive the loop for
+    everyone with one secret. Falls back to 403 when ``RESEARCH_TICK_SECRET``
+    isn't set on the server, so the endpoint is **off by default**.
+    """
+    expected = os.environ.get("RESEARCH_TICK_SECRET")
+    if not expected:
+        raise HTTPException(
+            403, "Service tick disabled — set RESEARCH_TICK_SECRET on the backend to enable."
+        )
+    # Constant-time compare to dodge timing-side-channel guesses on the secret.
+    if not x_tick_secret or not secrets.compare_digest(x_tick_secret, expected):
+        raise HTTPException(403, "Invalid X-Tick-Secret header")
+
+    due = store.due_subscriptions()  # no user filter → all active subs
+    ran: list[dict] = []
+    for sub in due:
+        fetched, error = _run_subscription(sub)
+        store.mark_subscription_run(sub["id"], fetched=fetched, error=error)
+        ran.append(
+            {
+                "id": sub["id"],
+                "user_id": sub["user_id"],
+                "name": sub["name"],
+                "fetched": fetched,
+                "error": error,
+            }
+        )
+    return {"ran": ran, "skipped": []}
+
+
 @app.post("/queue-bulk")
 def queue_bulk(req: BulkQueueRequest, uid: str = Depends(current_user)):
     queued = []
@@ -199,6 +369,20 @@ def get_draft(draft_id: str, uid: str = Depends(current_user)):
     if not d:
         raise HTTPException(404, "Not found")
     return d
+
+
+@app.get("/drafts/{draft_id}/citations")
+def draft_citations(draft_id: str, uid: str = Depends(current_user)):
+    """Return the research snippets that fed this draft's prompt.
+
+    Empty list when the draft was generated without research grounding.
+    Same 404 shape as ``/drafts/{id}`` for non-owned drafts so the auth
+    leak surface is identical.
+    """
+    snippets = store.get_draft_citations(uid, draft_id)
+    if snippets is None:
+        raise HTTPException(404, "Not found")
+    return {"draft_id": draft_id, "snippets": snippets}
 
 
 @app.get("/platforms/{platform}/adapter")

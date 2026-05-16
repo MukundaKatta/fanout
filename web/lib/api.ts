@@ -65,6 +65,10 @@ export const api = {
     }),
   cancelSchedule: (id: string) =>
     request<Draft>(`/drafts/${id}/schedule`, { method: "DELETE" }),
+  citations: (id: string) =>
+    request<{ draft_id: string; snippets: ResearchSnippet[] }>(
+      `/drafts/${id}/citations`
+    ),
   me: () => request<{ user_id: string }>("/me"),
 
   // --- research loop ---------------------------------------------------------
@@ -87,6 +91,49 @@ export const api = {
       const tail = qs.toString();
       return request<ResearchSnippet[]>(`/research${tail ? `?${tail}` : ""}`);
     },
+    suggest: (product: string, count = 5) =>
+      request<{ queries: string[] }>("/research/suggest", {
+        method: "POST",
+        body: JSON.stringify({ product, count }),
+      }),
+
+    subscriptions: {
+      list: () => request<ResearchSubscription[]>("/research/subscriptions"),
+      create: (input: {
+        name: string;
+        queries?: string[];
+        rss_feeds?: string[];
+        sources?: ResearchSource[];
+        interval_hours?: number;
+        active?: boolean;
+      }) =>
+        request<ResearchSubscription>("/research/subscriptions", {
+          method: "POST",
+          body: JSON.stringify(input),
+        }),
+      update: (id: string, patch: Partial<{
+        name: string;
+        queries: string[];
+        rss_feeds: string[];
+        sources: ResearchSource[];
+        interval_hours: number;
+        active: boolean;
+      }>) =>
+        request<ResearchSubscription>(`/research/subscriptions/${id}`, {
+          method: "PATCH",
+          body: JSON.stringify(patch),
+        }),
+      remove: (id: string) =>
+        request<{ deleted: string }>(`/research/subscriptions/${id}`, {
+          method: "DELETE",
+        }),
+    },
+
+    tick: () =>
+      request<{ ran: { id: string; name: string; fetched: number; error: string | null }[] }>(
+        "/research/tick",
+        { method: "POST" }
+      ),
   },
 };
 
@@ -117,6 +164,9 @@ export type Draft = {
   scheduled_at: string | null;
   post_url?: string | null;
   error?: string | null;
+  // IDs of research snippets that fed this draft's prompt. Empty when the
+  // draft was generated without research grounding.
+  cited_snippet_ids?: string[];
   created_at: string;
 };
 
@@ -133,5 +183,20 @@ export type ResearchSnippet = {
   score: number;
   published_at: string | null;
   used_in_draft_id: string | null;
+  created_at: string;
+};
+
+export type ResearchSubscription = {
+  id: string;
+  user_id: string;
+  name: string;
+  queries: string[];
+  rss_feeds: string[];
+  sources: ResearchSource[];
+  interval_hours: number;
+  active: boolean;
+  last_run_at: string | null;
+  last_fetched_count: number | null;
+  last_error: string | null;
   created_at: string;
 };
