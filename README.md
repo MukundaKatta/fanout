@@ -127,6 +127,10 @@ credentials — the extension drives composers in your own logged-in browser ses
 PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). `main` is protected; CI must
 pass and changes flow through PRs.
 
+CI includes a repository-layout contract check for the backend, web app, and
+Chrome extension so future refactors do not accidentally remove a deployable
+surface.
+
 ## License
 
 [MIT](LICENSE) © Mukunda Katta

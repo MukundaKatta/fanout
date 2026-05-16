@@ -11,6 +11,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  repo-layout:
+    name: Repository layout
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate repository contract
+        run: python3 scripts/check_repo_layout.py
+
   backend:
     name: Backend (Python)
     runs-on: ubuntu-latest
