@@ -22,6 +22,7 @@ web (Next.js 15)  ──►  backend (FastAPI + Postgres)  ──►  Groq (free
 - **Auto-post** on LinkedIn, X, Threads, Bluesky, Mastodon
 - **Assist / copy-and-open** for Reddit, HN, Product Hunt, Medium, Dev.to, Telegram, Discord, Slack
 - **mailto:** for Email — opens your default mail client with subject + body filled
+- **Research loop** pulls live signals from Hacker News, Dev.to, Reddit, and any RSS feed you point it at, so drafts can reference what's actually being discussed today
 - Atomic claim via `SELECT ... FOR UPDATE SKIP LOCKED` so concurrent polls can't double-post
 
 ## Run locally
@@ -63,8 +64,10 @@ Runs in **dev mode** by default (single user, no login). To enable Supabase magi
 ```
 backend/      FastAPI + agentic pipeline + Postgres store
   app/agent.py     plan → write → critique → refine + variations(N)
+  app/research.py  HN / Dev.to / Reddit / RSS signal fetchers (no API keys)
   app/store.py     SQLAlchemy-backed CRUD scoped by user_id
   app/main.py      REST endpoints
+  tests/           pytest, mocked HTTP for research, sqlite-backed for store
 extension/    Chrome MV3 extension that posts via your browser session
   src/background.js     polls /queue, dispatches to content scripts
   src/content-*.js      one per platform
@@ -72,6 +75,27 @@ web/          Next.js 15 + Tailwind + Supabase
   app/page.tsx          composer + draft picker + sticky action bar
   components/           Logo, Marquee, Spotlight, Typewriter, ...
 ```
+
+## Research loop
+
+Generation gets sharper when the agent has fresh signal to ground against.
+Run a research pass before generating, then opt in with `use_research: true`:
+
+```bash
+# pull signals into your account (deduped per user_id)
+curl -X POST http://localhost:8000/research \
+  -H 'content-type: application/json' \
+  -d '{"queries":["ai agents","content automation"],"rss_feeds":["https://news.ycombinator.com/rss"]}'
+
+# generate drafts that reference the top unused snippets
+curl -X POST http://localhost:8000/generate \
+  -H 'content-type: application/json' \
+  -d '{"product":"...","use_research":true}'
+```
+
+Snippets are scored by upstream popularity × recency (48h half-life), deduped
+per `(user_id, url)`, and marked **used** the first time they feed into a
+draft so the next research run pulls fresh material.
 
 ## Deploying the web app
 

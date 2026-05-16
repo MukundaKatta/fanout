@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from app.db import session_scope
-from app.models import Draft
+from app.models import Draft, ResearchSnippet
+from app.research import Snippet
 
 
 CHANNEL_ADAPTERS = {
@@ -214,3 +215,95 @@ def mark_failed(user_id: str, draft_id: str, error: str) -> dict | None:
         d.status = "failed"
         d.error = error
         return d.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# Research snippets
+# ---------------------------------------------------------------------------
+
+
+def upsert_snippets(user_id: str, snippets: list[Snippet]) -> list[dict]:
+    """Persist research snippets, deduping on (user_id, url).
+
+    On conflict we *refresh* the row — score/title/snippet are updated to
+    reflect the latest fetch, but ``used_in_draft_id`` is preserved so we
+    don't lose the link back to a draft that already cited the URL.
+
+    Implemented as ``select-then-insert-or-update`` so the same code path
+    works on Postgres (production) and SQLite in-memory (CI smoke).
+    """
+    out: list[dict] = []
+    with session_scope() as s:
+        for snip in snippets:
+            existing = s.scalar(
+                select(ResearchSnippet)
+                .where(ResearchSnippet.user_id == user_id)
+                .where(ResearchSnippet.url == snip.url)
+            )
+            if existing is None:
+                row = ResearchSnippet(
+                    user_id=user_id,
+                    source=snip.source,
+                    query=snip.query,
+                    url=snip.url,
+                    title=snip.title,
+                    snippet=snip.snippet,
+                    author=snip.author,
+                    score=snip.score,
+                    published_at=snip.published_at,
+                    extra=snip.extra or None,
+                )
+                s.add(row)
+                s.flush()
+                out.append(row.to_dict())
+            else:
+                # Refresh in place — keep ``used_in_draft_id`` and ``id`` stable.
+                existing.score = snip.score
+                existing.title = snip.title
+                existing.snippet = snip.snippet or existing.snippet
+                existing.author = snip.author or existing.author
+                existing.published_at = snip.published_at or existing.published_at
+                existing.extra = snip.extra or existing.extra
+                s.flush()
+                out.append(existing.to_dict())
+    return out
+
+
+def list_snippets(
+    user_id: str,
+    *,
+    source: str | None = None,
+    only_unused: bool = False,
+    limit: int = 50,
+) -> list[dict]:
+    with session_scope() as s:
+        stmt = select(ResearchSnippet).where(ResearchSnippet.user_id == user_id)
+        if source:
+            stmt = stmt.where(ResearchSnippet.source == source)
+        if only_unused:
+            stmt = stmt.where(ResearchSnippet.used_in_draft_id.is_(None))
+        stmt = stmt.order_by(ResearchSnippet.score.desc(), ResearchSnippet.created_at.desc()).limit(limit)
+        return [row.to_dict() for row in s.scalars(stmt)]
+
+
+def top_snippets_for_agent(user_id: str, *, limit: int = 8) -> list[dict]:
+    """Highest-scoring **unused** snippets — what the agent gets fed.
+
+    ``unused`` keeps the loop compounding: every research run pulls in fresh
+    items, the agent consumes them, and they fall out of the next prompt.
+    """
+    return list_snippets(user_id, only_unused=True, limit=limit)
+
+
+def mark_snippets_used(user_id: str, snippet_ids: list[str], draft_id: str) -> int:
+    if not snippet_ids:
+        return 0
+    count = 0
+    with session_scope() as s:
+        for sid in snippet_ids:
+            row = s.get(ResearchSnippet, sid)
+            if row is None or row.user_id != user_id:
+                continue
+            row.used_in_draft_id = draft_id
+            count += 1
+    return count
