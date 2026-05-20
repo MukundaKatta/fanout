@@ -1,6 +1,5 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@config "../tailwind.config.ts";
 
 :root {
   color-scheme: dark;
@@ -45,14 +44,20 @@ body::after {
 
 @layer components {
   .glass {
-    @apply bg-white/[0.035] border border-white/[0.07] backdrop-blur-2xl;
+    @apply border backdrop-blur-2xl;
+    background-color: rgba(255, 255, 255, 0.035);
+    border-color: rgba(255, 255, 255, 0.07);
     box-shadow:
       0 1px 0 0 rgba(255, 255, 255, 0.06) inset,
       0 0 0 1px rgba(255, 255, 255, 0.02),
       0 24px 56px -12px rgba(0, 0, 0, 0.5);
   }
   .glass-hover {
-    @apply transition-all duration-200 hover:bg-white/[0.05] hover:border-white/[0.14];
+    @apply transition-all duration-200;
+  }
+  .glass-hover:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.14);
   }
   .gradient-text {
     background: linear-gradient(120deg, #ffffff 0%, #c4b5fd 35%, #f0abfc 60%, #ffffff 100%);
@@ -100,9 +105,15 @@ body::after {
     cursor: not-allowed;
   }
   .input {
-    @apply w-full rounded-xl bg-white/[0.025] border border-white/[0.08] px-4 py-3 text-sm
-           placeholder:text-white/25 focus:outline-none focus:border-white/25
-           focus:bg-white/[0.045] transition-all duration-150;
+    @apply w-full rounded-xl border px-4 py-3 text-sm
+           placeholder:text-white/25 focus:outline-none
+           transition-all duration-150;
+    background-color: rgba(255, 255, 255, 0.025);
+    border-color: rgba(255, 255, 255, 0.08);
+  }
+  .input:focus {
+    background-color: rgba(255, 255, 255, 0.045);
+    border-color: rgba(255, 255, 255, 0.25);
   }
   .badge {
     @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider;
