@@ -738,9 +738,17 @@ export default function ResearchPage() {
 
         {opRuns.length > 0 && (
           <div className="mt-4 pt-3 border-t border-white/10">
-            <h3 className="text-[11px] uppercase tracking-wide text-white/40 font-mono mb-2">
-              Recent cycles
-            </h3>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-[11px] uppercase tracking-wide text-white/40 font-mono">
+                Recent cycles
+              </h3>
+              <Link
+                href="/operator"
+                className="text-[11px] text-emerald-300/80 hover:text-emerald-200 font-mono"
+              >
+                full history →
+              </Link>
+            </div>
             <ul className="space-y-1.5">
               {opRuns.map((r) => (
                 <li
