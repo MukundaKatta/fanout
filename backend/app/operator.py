@@ -128,3 +128,74 @@ def _build_notes(pick: dict, *, drafts_count: int) -> str:
     if not pick["snippets"]:
         return f"cold-start (no banked snippets); {drafts_count} drafts produced ungrounded"
     return f"cold-start (no leaderboard yet); {len(pick['snippets'])} top-score snippets fed {drafts_count} drafts"
+
+
+def tick_user(user_id: str, *, agent: SocialAgent | None = None) -> list[dict]:
+    """Fire every due operator subscription for one user.
+
+    Each subscription gets one ``operator.run`` cycle.  Failures are caught
+    per-subscription and logged into ``last_error`` — one bad sub does not
+    take down the rest.  Returns a list of result dicts shaped like:
+        {"subscription_id": ..., "name": ..., "run_id": ..., "drafts": N,
+         "error": null | str}
+    """
+    due = store.due_operator_subscriptions(user_id=user_id)
+    return _run_due(due, agent=agent)
+
+
+def tick_all(*, agent: SocialAgent | None = None) -> list[dict]:
+    """Fire every due operator subscription across every user.
+
+    Used by the service-auth ``/operator/tick/all`` endpoint and the hourly
+    GitHub Action.  Same per-subscription error isolation as ``tick_user``.
+    """
+    due = store.due_operator_subscriptions()
+    return _run_due(due, agent=agent)
+
+
+def _run_due(due: list[dict], *, agent: SocialAgent | None) -> list[dict]:
+    out: list[dict] = []
+    for sub in due:
+        sub_id = sub["id"]
+        try:
+            result = run(
+                sub["user_id"],
+                product=sub["product"],
+                platforms=sub["platforms"] or list(PLATFORMS),
+                weight_by_leaderboard=sub["weight_by_leaderboard"],
+                leaderboard_metric=sub["leaderboard_metric"],
+                snippet_limit=sub["snippet_limit"],
+                agent=agent,
+            )
+            store.mark_operator_subscription_run(
+                sub_id,
+                run_id=result.run_id,
+                error=None,
+            )
+            out.append(
+                {
+                    "subscription_id": sub_id,
+                    "name": sub["name"],
+                    "run_id": result.run_id,
+                    "drafts": len(result.drafts),
+                    "leaderboard_used": result.leaderboard_used,
+                    "error": None,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 — one bad sub shouldn't fail the batch
+            store.mark_operator_subscription_run(
+                sub_id,
+                run_id=None,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            out.append(
+                {
+                    "subscription_id": sub_id,
+                    "name": sub["name"],
+                    "run_id": None,
+                    "drafts": 0,
+                    "leaderboard_used": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+    return out

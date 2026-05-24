@@ -77,24 +77,87 @@ showing in a UI:
 - `"cold-start (no leaderboard yet); 5 top-score snippets fed 4 drafts"`
 - `"cold-start (no banked snippets); 4 drafts produced ungrounded"`
 
+## Operator subscriptions (autonomous mode)
+
+For the loop to be truly autonomous you don't want to hand-roll a cron
+that calls `/operator/run` — you want stored configs that the backend
+walks on a cadence, the same way research subscriptions work.  That is
+`operator_subscriptions`.
+
+### Shape
+
+Each subscription is `(name, product, platforms, interval_hours,
+weight_by_leaderboard, leaderboard_metric, snippet_limit, active)`.
+`last_run_at` gates the cron so a sub only fires when
+`now - last_run_at >= interval_hours`; a freshly-created sub with
+`last_run_at = NULL` is considered due immediately.
+
+### Endpoints
+
+```bash
+# CRUD
+curl -s -X POST  http://localhost:8000/operator/subscriptions \
+     -d '{"name":"daily-x-linkedin","product":"<blurb>","platforms":["x","linkedin"]}'
+curl -s          http://localhost:8000/operator/subscriptions
+curl -s -X PATCH http://localhost:8000/operator/subscriptions/<id> -d '{"active":false}'
+curl -s -X DELETE http://localhost:8000/operator/subscriptions/<id>
+
+# Manual fire — runs every sub belonging to the authed user that is due now
+curl -s -X POST http://localhost:8000/operator/tick
+
+# Service-auth fan-out — used by the hourly GitHub Action; off by default
+curl -s -X POST http://localhost:8000/operator/tick/all \
+     -H "X-Tick-Secret: $OPERATOR_TICK_SECRET"
+```
+
+### Cron wiring
+
+`.github/workflows/operator-tick.yml` is the recommended driver.  It is
+off by default; turn it on by setting:
+
+```
+REPO VARIABLE  OPERATOR_TICK_ENABLED = "true"
+REPO SECRET    OPERATOR_TICK_URL     = "https://api.example.com/operator/tick/all"
+REPO SECRET    OPERATOR_TICK_SECRET  = "<same value as backend env>"
+```
+
+The workflow hits `/operator/tick/all` hourly (minute :37, deliberately
+offset from research-tick at :17 so they don't fight for backend
+attention).  Failures log a warning and exit 0 — a flaky backend should
+not redden the repo's CI badge.
+
+### Error isolation
+
+`tick_all` walks every due subscription in sequence.  A subscription
+that raises mid-cycle gets its `last_error` stamped, but the remaining
+subscriptions in the batch still run — one broken product blurb cannot
+silence the whole fleet.
+
 ## Pairing with cron
 
-There is no built-in operator scheduler yet — drive `/operator/run` from
-the same hourly cron that already runs `/research/tick/all` if you want
-the loop to be fully autonomous.  Recommended sequence:
+Recommended sequence on a single host:
 
-1. `/research/tick/all`   — pull fresh signals
-2. `/operator/run`        — pick + draft
+1. `/research/tick/all`   — pull fresh signals (`:17 * * * *`)
+2. `/operator/tick/all`   — pick + draft per subscription (`:37 * * * *`)
 3. extension polls `/queue` → posts → reports outcomes
 
 ## Where the code lives
 
-- `backend/app/operator.py` — `operator.run(uid, ...)` end-to-end driver
+- `backend/app/operator.py` — `operator.run(uid, ...)` end-to-end driver,
+  `operator.tick_user(uid)`, `operator.tick_all()`
 - `backend/app/store.py` — `select_experiment_snippets`,
   `start_operator_run`, `complete_operator_run`, `fail_operator_run`,
-  `list_operator_runs`, `get_operator_run`
-- `backend/app/models.py` — `OperatorRun` SQLAlchemy model
-- `backend/migrations/006_operator_runs.sql`
+  `list_operator_runs`, `get_operator_run`, plus subscription CRUD
+  (`create_operator_subscription`, `list_operator_subscriptions`,
+  `update_operator_subscription`, `delete_operator_subscription`,
+  `due_operator_subscriptions`, `mark_operator_subscription_run`)
+- `backend/app/models.py` — `OperatorRun` + `OperatorSubscription`
+- `backend/migrations/006_operator_runs.sql`,
+  `backend/migrations/007_operator_subscriptions.sql`
 - `backend/app/main.py` — `/operator/run`, `/operator/runs`,
-  `/operator/runs/{run_id}`
-- `web/lib/api.ts` — `api.operator.{run,list,get}` typed client
+  `/operator/runs/{run_id}`, `/operator/subscriptions` CRUD,
+  `/operator/tick`, `/operator/tick/all`
+- `.github/workflows/operator-tick.yml` — hourly cron driver
+- `web/lib/api.ts` — `api.operator.{run,list,get}`,
+  `api.operator.subscriptions.{list,create,update,remove}`,
+  `api.operator.tick()`

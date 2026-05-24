@@ -7,7 +7,14 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 from app.db import session_scope
-from app.models import Draft, DraftOutcome, OperatorRun, ResearchSnippet, ResearchSubscription
+from app.models import (
+    Draft,
+    DraftOutcome,
+    OperatorRun,
+    OperatorSubscription,
+    ResearchSnippet,
+    ResearchSubscription,
+)
 from app.research import Snippet
 
 
@@ -843,4 +850,161 @@ def get_operator_run(user_id: str, run_id: str) -> dict | None:
         row = s.get(OperatorRun, run_id)
         if row is None or row.user_id != user_id:
             return None
+        return row.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# Operator subscriptions — stored configs that fire on a cadence.
+# ---------------------------------------------------------------------------
+
+
+# Server-side bounds: keep cron-driven subs from drifting into pathologies.
+_OPSUB_INTERVAL_MIN_HOURS = 1
+_OPSUB_INTERVAL_MAX_HOURS = 24 * 7
+_OPSUB_SNIPPET_LIMIT_MAX = 20
+
+
+def _clamp_opsub(field: str, value, lo, hi):
+    if value is None:
+        return None
+    if value < lo or value > hi:
+        raise ValueError(f"{field} must be in [{lo}, {hi}]")
+    return value
+
+
+def create_operator_subscription(
+    user_id: str,
+    *,
+    name: str,
+    product: str,
+    platforms: list[str],
+    weight_by_leaderboard: bool = True,
+    leaderboard_metric: str = "likes",
+    snippet_limit: int = 8,
+    interval_hours: int = 24,
+    active: bool = True,
+) -> dict:
+    _clamp_opsub("interval_hours", interval_hours, _OPSUB_INTERVAL_MIN_HOURS, _OPSUB_INTERVAL_MAX_HOURS)
+    _clamp_opsub("snippet_limit", snippet_limit, 1, _OPSUB_SNIPPET_LIMIT_MAX)
+    with session_scope() as s:
+        row = OperatorSubscription(
+            user_id=user_id,
+            name=name,
+            product=product,
+            platforms=list(platforms),
+            weight_by_leaderboard=bool(weight_by_leaderboard),
+            leaderboard_metric=leaderboard_metric,
+            snippet_limit=int(snippet_limit),
+            interval_hours=int(interval_hours),
+            active=bool(active),
+        )
+        s.add(row)
+        s.flush()
+        return row.to_dict()
+
+
+def list_operator_subscriptions(user_id: str) -> list[dict]:
+    with session_scope() as s:
+        rows = s.scalars(
+            select(OperatorSubscription)
+            .where(OperatorSubscription.user_id == user_id)
+            .order_by(OperatorSubscription.created_at.desc())
+        ).all()
+        return [r.to_dict() for r in rows]
+
+
+def update_operator_subscription(
+    user_id: str,
+    sub_id: str,
+    *,
+    name: str | None = None,
+    product: str | None = None,
+    platforms: list[str] | None = None,
+    weight_by_leaderboard: bool | None = None,
+    leaderboard_metric: str | None = None,
+    snippet_limit: int | None = None,
+    interval_hours: int | None = None,
+    active: bool | None = None,
+) -> dict | None:
+    _clamp_opsub("interval_hours", interval_hours, _OPSUB_INTERVAL_MIN_HOURS, _OPSUB_INTERVAL_MAX_HOURS)
+    _clamp_opsub("snippet_limit", snippet_limit, 1, _OPSUB_SNIPPET_LIMIT_MAX)
+    with session_scope() as s:
+        row = s.get(OperatorSubscription, sub_id)
+        if row is None or row.user_id != user_id:
+            return None
+        if name is not None:
+            row.name = name
+        if product is not None:
+            row.product = product
+        if platforms is not None:
+            row.platforms = list(platforms)
+        if weight_by_leaderboard is not None:
+            row.weight_by_leaderboard = bool(weight_by_leaderboard)
+        if leaderboard_metric is not None:
+            row.leaderboard_metric = leaderboard_metric
+        if snippet_limit is not None:
+            row.snippet_limit = int(snippet_limit)
+        if interval_hours is not None:
+            row.interval_hours = int(interval_hours)
+        if active is not None:
+            row.active = bool(active)
+        s.flush()
+        return row.to_dict()
+
+
+def delete_operator_subscription(user_id: str, sub_id: str) -> bool:
+    with session_scope() as s:
+        row = s.get(OperatorSubscription, sub_id)
+        if row is None or row.user_id != user_id:
+            return False
+        s.delete(row)
+        return True
+
+
+def due_operator_subscriptions(
+    *,
+    user_id: str | None = None,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Return active subscriptions whose ``last_run_at`` is older than
+    ``interval_hours``.  Cross-DB friendly: we do the recency check in
+    Python so SQLite (tests) and Postgres (prod) follow the same code path.
+    """
+    now = now or datetime.now(timezone.utc)
+    with session_scope() as s:
+        stmt = select(OperatorSubscription).where(OperatorSubscription.active.is_(True))
+        if user_id:
+            stmt = stmt.where(OperatorSubscription.user_id == user_id)
+        rows = s.scalars(stmt).all()
+        out: list[dict] = []
+        for row in rows:
+            if row.last_run_at is None:
+                out.append(row.to_dict())
+                continue
+            last = (
+                row.last_run_at.replace(tzinfo=timezone.utc)
+                if row.last_run_at.tzinfo is None
+                else row.last_run_at
+            )
+            if now - last >= timedelta(hours=row.interval_hours):
+                out.append(row.to_dict())
+        return out
+
+
+def mark_operator_subscription_run(
+    sub_id: str,
+    *,
+    run_id: str | None,
+    error: str | None = None,
+    when: datetime | None = None,
+) -> dict | None:
+    when = when or datetime.now(timezone.utc)
+    with session_scope() as s:
+        row = s.get(OperatorSubscription, sub_id)
+        if row is None:
+            return None
+        row.last_run_at = when
+        row.last_run_id = run_id
+        row.last_error = error
+        s.flush()
         return row.to_dict()
