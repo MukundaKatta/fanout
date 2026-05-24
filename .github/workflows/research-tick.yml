@@ -1,0 +1,118 @@
+# Research-tick cron — hits POST /research/tick/all on the deployed backend so
+# active research subscriptions auto-fetch on their configured cadence, fanning
+# out across every user in one request.
+#
+# Disabled by default. To enable:
+#   1. Deploy the backend with env var RESEARCH_TICK_SECRET set to a strong random
+#      string (the service auth token for the fan-out endpoint).
+#   2. Set repo VARIABLE  RESEARCH_TICK_ENABLED = "true"
+#   3. Set repo SECRET    RESEARCH_TICK_URL     = "https://api.example.com/research/tick/all"
+#   4. Set repo SECRET    RESEARCH_TICK_SECRET  = "<same value as backend env>"
+#
+# The job is intentionally permissive — a transient backend hiccup should not
+# turn the repo's CI badge red. Failures are logged but the step exits 0.
+# Workflow output shows fetched/skipped counts per run via the JSON response.
+
+name: Research tick
+
+on:
+  schedule:
+    # Hourly — the tick endpoint is idempotent (subs that aren't due yet
+    # get skipped server-side), so cheap to run more often than the
+    # tightest subscription interval.
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    # Manual fire from the Actions tab — handy for smoke-testing after
+    # changing subscription configs.
+
+permissions:
+  contents: read
+
+concurrency:
+  # Tick is idempotent but there's no point queuing a backlog if the cron
+  # somehow runs concurrently with itself.
+  group: research-tick
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    if: vars.RESEARCH_TICK_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe required secrets
+        id: probe
+        env:
+          URL: ${{ secrets.RESEARCH_TICK_URL }}
+        run: |
+          if [ -z "$URL" ]; then
+            echo "::warning::RESEARCH_TICK_ENABLED is true but RESEARCH_TICK_URL is unset; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Hit /research/tick/all
+        if: steps.probe.outputs.skip != 'true'
+        env:
+          URL: ${{ secrets.RESEARCH_TICK_URL }}
+          TICK_SECRET: ${{ secrets.RESEARCH_TICK_SECRET }}
+        run: |
+          set -u
+          if [ -z "$TICK_SECRET" ]; then
+            echo "::warning::RESEARCH_TICK_SECRET is unset — backend will reject the request with 403."
+          fi
+          # ``-w`` writes a status-code line we can inspect for non-2xx.
+          # ``--max-time`` caps the request so a hung backend doesn't burn
+          # the whole 5-minute timeout. Body goes to ``response.json``.
+          STATUS=$(curl -sS -X POST "$URL" \
+            -H 'content-type: application/json' \
+            -H "X-Tick-Secret: $TICK_SECRET" \
+            --max-time 90 \
+            -o response.json \
+            -w '%{http_code}' || echo "000")
+          echo "HTTP $STATUS"
+          echo "--- response ---"
+          cat response.json || true
+          echo
+          if [ "$STATUS" -lt 200 ] || [ "$STATUS" -ge 300 ]; then
+            echo "::warning::Research tick returned HTTP $STATUS — check backend health and secret."
+            # Exit 0 anyway; a flaky backend should not turn the repo red.
+          fi
+
+      - name: Summarize
+        if: steps.probe.outputs.skip != 'true' && always()
+        run: |
+          # The response shape is:
+          #   { "ran": [{"id","name","fetched","error"}, ...], "skipped": [...] }
+          if [ -f response.json ]; then
+            python3 - <<'PY'
+          import json, os, pathlib
+          try:
+              data = json.loads(pathlib.Path("response.json").read_text())
+          except Exception as e:
+              print(f"could not parse response: {e}")
+              raise SystemExit(0)
+          ran = data.get("ran", []) if isinstance(data, dict) else []
+          total = sum(r.get("fetched", 0) or 0 for r in ran)
+          errors = [r for r in ran if r.get("error")]
+          summary = f"Ran {len(ran)} subscriptions, fetched {total} snippets"
+          if errors:
+              summary += f", {len(errors)} with errors"
+          print(summary)
+          # Surface in the workflow run summary so it's visible without clicking in.
+          step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if step_summary:
+              with open(step_summary, "a") as f:
+                  f.write(f"### Research tick\n\n{summary}\n")
+                  for r in ran:
+                      mark = "❌" if r.get("error") else "✅"
+                      f.write(
+                          f"- {mark} `{r.get('name','?')}` — "
+                          f"fetched {r.get('fetched',0)}"
+                      )
+                      if r.get("error"):
+                          f.write(f" — error: `{r['error']}`")
+                      f.write("\n")
+          PY
+          fi

@@ -30,6 +30,8 @@ from app.research import (
 
 
 def test_fetch_hn_parses_hits(monkeypatch):
+    recent = datetime.now(timezone.utc) - timedelta(hours=4)
+    older = datetime.now(timezone.utc) - timedelta(hours=28)
     payload = {
         "hits": [
             {
@@ -38,7 +40,7 @@ def test_fetch_hn_parses_hits(monkeypatch):
                 "author": "alice",
                 "points": 120,
                 "num_comments": 30,
-                "created_at": "2026-04-26T08:00:00Z",
+                "created_at": recent.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "objectID": "1",
             },
             {
@@ -47,7 +49,7 @@ def test_fetch_hn_parses_hits(monkeypatch):
                 "objectID": "2",
                 "points": 0,
                 "num_comments": 0,
-                "created_at": "2026-04-25T08:00:00Z",
+                "created_at": older.strftime("%Y-%m-%dT%H:%M:%SZ"),
             },
             {"objectID": "3"},  # missing title — must be dropped
         ]
@@ -97,7 +99,7 @@ def test_fetch_devto_normalises_tag_and_drops_invalid(monkeypatch):
                 "description": "summary",
                 "public_reactions_count": 50,
                 "comments_count": 10,
-                "published_at": "2026-04-25T00:00:00Z",
+                "published_at": (datetime.now(timezone.utc) - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "user": {"name": "Bob"},
             },
             {"title": "no url"},  # missing url → dropped
@@ -147,29 +149,33 @@ def test_fetch_reddit_parses_children(monkeypatch):
 
 
 def test_fetch_rss_atom_and_rss20(monkeypatch):
-    rss20 = b"""<?xml version="1.0"?>
+    recent = datetime.now(timezone.utc) - timedelta(hours=4)
+    rss_pubdate = recent.strftime("%a, %d %b %Y %H:%M:%S +0000")
+    atom_updated = recent.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    rss20 = f"""<?xml version="1.0"?>
 <rss><channel>
   <item><title>Item A</title><link>https://a.example</link>
-    <description>desc</description><pubDate>Sun, 26 Apr 2026 12:00:00 +0000</pubDate>
+    <description>desc</description><pubDate>{rss_pubdate}</pubDate>
   </item>
   <item><title>No link</title></item>
-</channel></rss>"""
+</channel></rss>""".encode()
 
     monkeypatch.setattr(research, "_http_get", lambda *a, **kw: rss20)
     out = fetch_rss("https://blog.example/feed.xml")
     assert [s.title for s in out] == ["Item A"]
     assert out[0].score > 0  # recency-only score, but non-zero
 
-    atom = b"""<?xml version="1.0"?>
+    atom = f"""<?xml version="1.0"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
   <entry>
     <title>Atom A</title>
     <link href="https://a.atom"/>
     <summary>summary</summary>
-    <updated>2026-04-26T12:00:00Z</updated>
+    <updated>{atom_updated}</updated>
     <author><name>Bob</name></author>
   </entry>
-</feed>"""
+</feed>""".encode()
     monkeypatch.setattr(research, "_http_get", lambda *a, **kw: atom)
     out = fetch_rss("https://blog.example/atom.xml")
     assert [s.title for s in out] == ["Atom A"]
