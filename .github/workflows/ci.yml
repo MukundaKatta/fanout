@@ -117,4 +117,18 @@ jobs:
                   assert os.path.exists(js), f"missing file: {js}"
           assert os.path.exists(m["background"]["service_worker"])
           print("OK — all referenced files exist")
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Syntax-check JS sources
+        # Node --check parses without executing; flags syntactic issues a
+        # Chrome-load would otherwise hide behind silent failure.
+        run: |
+          for f in src/*.js; do node --check "$f" || exit 1; done
+          echo "OK — all JS files parse cleanly"
+
+      - name: Run outcome-extractor tests
+        run: node tests/test_outcomes.mjs
           PY

@@ -4,14 +4,20 @@
     <meta charset="utf-8" />
     <title>Fanout</title>
     <style>
-      body { font-family: system-ui, sans-serif; width: 320px; padding: 12px; }
+      body { font-family: system-ui, sans-serif; width: 340px; padding: 12px; }
       h1 { margin: 0 0 8px 0; font-size: 16px; }
+      h2 { margin: 14px 0 6px 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: #666; }
       label { display: block; font-size: 12px; margin-top: 8px; }
-      input[type="text"], textarea { width: 100%; padding: 6px; box-sizing: border-box; font-family: monospace; font-size: 11px; }
+      input[type="text"], input[type="number"], textarea {
+        width: 100%; padding: 6px; box-sizing: border-box;
+        font-family: monospace; font-size: 11px;
+      }
       textarea { height: 60px; resize: vertical; }
       button { margin-top: 10px; padding: 6px 10px; }
       .row { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+      .row input[type="number"] { width: 60px; }
       .muted { color: #888; font-size: 11px; margin-top: 12px; }
+      hr { border: 0; border-top: 1px solid #eee; margin: 12px 0 0 0; }
     </style>
   </head>
   <body>
@@ -26,10 +32,29 @@
     </label>
     <div class="row">
       <input id="enabled" type="checkbox" />
-      <label for="enabled" style="margin:0">Enabled (poll every 30s)</label>
+      <label for="enabled" style="margin:0">Poll queue (every 30s)</label>
     </div>
+
+    <hr />
+    <h2>Outcome feedback</h2>
+    <p class="muted" style="margin-top:0">
+      Opens posted-draft URLs in background tabs to scrape engagement
+      metrics (likes / replies / reposts / views) and feed them back to
+      the leaderboard. Off by default.
+    </p>
+    <div class="row">
+      <input id="outcomesEnabled" type="checkbox" />
+      <label for="outcomesEnabled" style="margin:0">Enable outcome polling</label>
+    </div>
+    <label>
+      Interval (minutes between scrapes)
+      <input id="outcomesInterval" type="number" min="5" step="5" value="60" />
+    </label>
+
+    <hr />
     <button id="save">Save</button>
-    <button id="pollNow">Poll now</button>
+    <button id="pollNow">Poll queue now</button>
+    <button id="outcomesNow">Pull outcomes now</button>
     <p id="status" class="muted"></p>
     <script src="popup.js"></script>
   </body>

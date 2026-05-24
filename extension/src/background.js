@@ -2,6 +2,14 @@
 
 const DEFAULT_API = "http://localhost:8000";
 const POLL_ALARM = "fanout-poll";
+// Outcome-puller is a separate alarm so it can run on a slower cadence
+// than the queue poll (engagement metrics evolve over hours, not seconds).
+const OUTCOMES_ALARM = "fanout-outcomes";
+const OUTCOMES_DEFAULT_MINUTES = 60;
+// Cap the per-cycle work so a backlog of "posted" drafts can't burn a
+// browser session opening hundreds of tabs at once.
+const OUTCOMES_MAX_PER_CYCLE = 8;
+const OUTCOMES_TAB_TIMEOUT_MS = 20000;
 
 // Per-platform routing: which tab pattern to find/open, OR which compose URL to open
 // for "copy & open" platforms that the extension can't fully drive.
@@ -40,11 +48,29 @@ const PLATFORM_TARGETS = {
 };
 
 async function getConfig() {
-  const { apiUrl, enabled, jwt } = await chrome.storage.local.get(["apiUrl", "enabled", "jwt"]);
+  const {
+    apiUrl,
+    enabled,
+    jwt,
+    outcomesEnabled,
+    outcomesIntervalMinutes,
+  } = await chrome.storage.local.get([
+    "apiUrl",
+    "enabled",
+    "jwt",
+    "outcomesEnabled",
+    "outcomesIntervalMinutes",
+  ]);
   return {
     apiUrl: apiUrl || DEFAULT_API,
     enabled: enabled !== false,
     jwt: jwt || "",
+    // Outcome-pulling is OFF by default — the user has to opt in via the
+    // popup. We don't want to open background tabs to a user's social
+    // pages without their explicit consent.
+    outcomesEnabled: outcomesEnabled === true,
+    outcomesIntervalMinutes:
+      Number(outcomesIntervalMinutes) > 0 ? Number(outcomesIntervalMinutes) : OUTCOMES_DEFAULT_MINUTES,
   };
 }
 
@@ -211,19 +237,126 @@ async function poll() {
   }
 }
 
-chrome.runtime.onInstalled.addListener(() => {
+// ---------------------------------------------------------------------------
+// Outcome puller — scrape engagement metrics off posted-draft URLs and
+// POST them to /drafts/{id}/outcomes so the leaderboard fills.
+// ---------------------------------------------------------------------------
+
+async function reportOutcome(apiUrl, jwt, draftId, kind, value) {
+  try {
+    await fetch(`${apiUrl}/drafts/${encodeURIComponent(draftId)}/outcomes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders(jwt) },
+      body: JSON.stringify({ metric_kind: kind, metric_value: value }),
+    });
+  } catch (e) {
+    console.warn(`Fanout: outcome report failed (${kind}=${value})`, e);
+  }
+}
+
+async function extractMetricsFromTab(tabId) {
+  try {
+    // Two-step: inject outcomes.js (it sets window.__fanoutExtractMetrics),
+    // then call it. Keeping the extractor in its own file means we can
+    // ship updates without touching the worker.
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["src/outcomes.js"],
+    });
+    const [res] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => (window.__fanoutExtractMetrics ? window.__fanoutExtractMetrics() : null),
+    });
+    return res?.result || null;
+  } catch (e) {
+    console.warn("Fanout: extractMetrics failed", e);
+    return null;
+  }
+}
+
+async function pullOutcomesForDraft(apiUrl, jwt, draft) {
+  if (!draft?.post_url) return { draft_id: draft?.id, skipped: "no post_url" };
+  const tab = await chrome.tabs.create({ url: draft.post_url, active: false });
+  let result = null;
+  try {
+    await waitForTabLoad(tab.id, { timeout: OUTCOMES_TAB_TIMEOUT_MS });
+    // Brief settle so SPA-style platforms finish painting engagement counts.
+    await new Promise((r) => setTimeout(r, 1500));
+    result = await extractMetricsFromTab(tab.id);
+  } finally {
+    // Always close — even on extraction failure we don't want stray tabs.
+    try {
+      await chrome.tabs.remove(tab.id);
+    } catch {
+      /* tab already gone */
+    }
+  }
+  const metrics = result?.metrics || {};
+  const reported = {};
+  for (const [kind, value] of Object.entries(metrics)) {
+    if (typeof value !== "number" || value < 0) continue;
+    await reportOutcome(apiUrl, jwt, draft.id, kind, value);
+    reported[kind] = value;
+  }
+  return { draft_id: draft.id, source: result?.source || "none", reported };
+}
+
+async function pollOutcomes() {
+  const { apiUrl, jwt, outcomesEnabled } = await getConfig();
+  if (!outcomesEnabled) return { ran: false, reason: "outcomes-disabled" };
+  let drafts;
+  try {
+    const res = await fetch(`${apiUrl}/drafts?status=posted`, { headers: authHeaders(jwt) });
+    if (!res.ok) return { ran: false, reason: `HTTP ${res.status}` };
+    drafts = await res.json();
+  } catch (e) {
+    return { ran: false, reason: `fetch-failed: ${e?.message ?? e}` };
+  }
+  const eligible = (drafts || []).filter((d) => d.post_url);
+  const batch = eligible.slice(0, OUTCOMES_MAX_PER_CYCLE);
+  const results = [];
+  for (const draft of batch) {
+    try {
+      results.push(await pullOutcomesForDraft(apiUrl, jwt, draft));
+    } catch (e) {
+      results.push({ draft_id: draft.id, error: String(e?.message ?? e) });
+    }
+  }
+  return { ran: true, total_posted: eligible.length, processed: results };
+}
+
+async function scheduleAlarms() {
+  const { outcomesIntervalMinutes } = await getConfig();
   chrome.alarms.create(POLL_ALARM, { periodInMinutes: 0.5 });
+  chrome.alarms.create(OUTCOMES_ALARM, {
+    delayInMinutes: outcomesIntervalMinutes,
+    periodInMinutes: outcomesIntervalMinutes,
+  });
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  void scheduleAlarms();
 });
 chrome.runtime.onStartup.addListener(() => {
-  chrome.alarms.create(POLL_ALARM, { periodInMinutes: 0.5 });
+  void scheduleAlarms();
 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === POLL_ALARM) poll();
+  if (alarm.name === OUTCOMES_ALARM) pollOutcomes();
 });
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "fanout:poll-now") {
     poll().then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (msg?.type === "fanout:outcomes-now") {
+    pollOutcomes().then((out) => sendResponse({ ok: true, ...out }));
+    return true;
+  }
+  if (msg?.type === "fanout:reschedule-outcomes") {
+    // Called by the popup when the user changes the interval setting.
+    scheduleAlarms().then(() => sendResponse({ ok: true }));
     return true;
   }
 });
