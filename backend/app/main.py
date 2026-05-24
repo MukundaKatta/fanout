@@ -110,6 +110,15 @@ class ReviewApprovalRequest(BaseModel):
     reviewer: str = Field(..., min_length=2, max_length=120)
 
 
+class OutcomeReport(BaseModel):
+    """One engagement observation pushed by the extension or a polling adapter."""
+
+    metric_kind: str = Field(..., min_length=1, max_length=32)
+    metric_value: int = Field(..., ge=0)
+    post_url: str | None = None
+    observed_at: datetime | None = None
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
@@ -456,3 +465,66 @@ def report_posted(report: PostedReport, uid: str = Depends(current_user)):
     if not d:
         raise HTTPException(404, "Not found")
     return d
+
+
+@app.post("/drafts/{draft_id}/outcomes", status_code=201)
+def record_outcome(
+    draft_id: str,
+    report: OutcomeReport,
+    uid: str = Depends(current_user),
+):
+    """Append an engagement observation for a posted draft.
+
+    The extension (or any polling adapter) calls this when it sees fresh
+    likes/comments/views/etc. on the post URL.  Multiple calls per
+    ``(draft_id, metric_kind)`` are fine — each one is a new row so we keep
+    the timeline.
+    """
+    try:
+        row = store.record_outcome(
+            uid,
+            draft_id,
+            metric_kind=report.metric_kind,
+            metric_value=report.metric_value,
+            post_url=report.post_url,
+            observed_at=report.observed_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    if row is None:
+        raise HTTPException(404, "Not found")
+    return row
+
+
+@app.get("/drafts/{draft_id}/outcomes")
+def list_outcomes(draft_id: str, uid: str = Depends(current_user)):
+    """Full append-only timeline + latest-per-kind snapshot."""
+    # Cheap auth-leak guard: confirm draft ownership via the same path the
+    # other draft endpoints use, then return whatever rows exist.
+    if store.get_draft(uid, draft_id) is None:
+        raise HTTPException(404, "Not found")
+    return {
+        "draft_id": draft_id,
+        "latest": store.latest_outcomes_for_draft(uid, draft_id),
+        "timeline": store.outcomes_for_draft(uid, draft_id),
+    }
+
+
+@app.get("/research/sources/leaderboard")
+def source_leaderboard(
+    metric: str = "likes",
+    limit: int = 10,
+    uid: str = Depends(current_user),
+):
+    """Top research sources, ranked by aggregated engagement on grounded drafts.
+
+    The compounding piece of the research loop: sources whose snippets feed
+    drafts that perform well get higher rankings, so the next research tick
+    can bias its picks toward them.
+    """
+    if limit < 1 or limit > 50:
+        raise HTTPException(422, "limit must be 1..50")
+    return {
+        "metric": metric,
+        "rows": store.source_leaderboard(uid, metric_kind=metric, limit=limit),
+    }
