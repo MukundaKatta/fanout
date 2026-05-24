@@ -11,19 +11,62 @@ Agentic content studio for indie shippers. One product description → 5 distinc
 ## Architecture
 
 ```
-web (Next.js 15)  ──►  backend (FastAPI + Postgres)  ──►  Groq (free Llama 3.3 70B)
-                                  ▲
-                                  │ polls every 30s
-                                  │
-                       extension (Chrome MV3) ── posts via your logged-in tabs
+                       ┌────────────────────────────────────────────┐
+                       │           web (Next.js 15 + Tailwind)       │
+                       │   /  composer  ·  /research  ·  /operator   │
+                       └─────────────────┬──────────────────────────┘
+                                         │ REST
+                                         ▼
+   ┌──────────────────────────────────────────────────────────────┐
+   │            backend (FastAPI + Postgres + SQLAlchemy)          │
+   │                                                                │
+   │   /generate  /variations            ─►  Groq (free Llama 3.3)  │
+   │   /research /research/sources/lead.   ─►  HN · Dev.to · Reddit │
+   │   /operator/run /operator/tick/all          · RSS              │
+   │   /drafts /drafts/{id}/outcomes                                │
+   │   /queue /posted                                               │
+   └─────────────┬─────────────────────────────────────────────────┘
+                 │ polls every 30s          ▲
+                 ▼                          │ POSTs engagement
+   ┌─────────────────────────────────────────────────────────────┐
+   │            extension (Chrome MV3) ── your browser session    │
+   │  · posts drafts via X / LinkedIn / Threads / Bluesky / ...  │
+   │  · outcome puller scrapes engagement off posted URLs        │
+   └─────────────────────────────────────────────────────────────┘
 ```
 
 - **No third-party API keys** to authorise — extension drives composers in your own browser session
 - **Auto-post** on LinkedIn, X, Threads, Bluesky, Mastodon
 - **Assist / copy-and-open** for Reddit, HN, Product Hunt, Medium, Dev.to, Telegram, Discord, Slack
 - **mailto:** for Email — opens your default mail client with subject + body filled
-- **Research loop** pulls live signals from Hacker News, Dev.to, Reddit, and any RSS feed you point it at, so drafts can reference what's actually being discussed today
+- **Self-tuning research loop** — pulls live HN / Dev.to / Reddit / RSS signals, drafts cite which signals they used, posted drafts feed engagement back, and the operator biases the next cycle toward sources that produce hits
 - Atomic claim via `SELECT ... FOR UPDATE SKIP LOCKED` so concurrent polls can't double-post
+
+## The autonomy loop
+
+Fanout's compounding piece — once configured, the whole loop runs on a cron
+with no human in the middle:
+
+```
+research-tick   (:17 hourly) ─►  bank fresh signals from HN / Dev.to / Reddit / RSS
+operator-tick   (:37 hourly) ─►  pick experiment + draft for each subscription
+extension queue (every 30s)  ─►  post via your browser session
+outcome puller  (every 60m)  ─►  scrape likes/comments/reposts/views from post URLs
+                                 └─► leaderboard fills
+                                         └─► next operator-tick weights
+                                             toward sources that earned engagement
+```
+
+Each layer is independently usable — turn off the operator and use the
+research workbench manually, or skip outcome polling and ground drafts
+on live signals alone. They compose, they don't depend on each other.
+
+| Stage | What runs | Where to wire it |
+| --- | --- | --- |
+| **Research** | `POST /research` (manual), `POST /research/tick/all` (cron) | `docs/RESEARCH_LOOP.md` |
+| **Outcome feedback** | `POST /drafts/{id}/outcomes`, `GET /research/sources/leaderboard` | `docs/RESEARCH_LOOP.md#outcome-feedback-closing-the-loop` |
+| **Operator** | `POST /operator/run` (manual), `POST /operator/tick/all` (cron) | `docs/OPERATOR.md` |
+| **Extension outcome puller** | Background tabs on a configurable cadence | `extension/src/outcomes.js`, popup toggle |
 
 ## Run locally
 
@@ -65,18 +108,30 @@ Runs in **dev mode** by default (single user, no login). To enable Supabase magi
 backend/      FastAPI + agentic pipeline + Postgres store
   app/agent.py     plan → write → critique → refine + variations(N)
   app/research.py  HN / Dev.to / Reddit / RSS signal fetchers (no API keys)
+  app/operator.py  autonomous experiment picker + OperatorRun audit trail
   app/store.py     SQLAlchemy-backed CRUD scoped by user_id
   app/main.py      REST endpoints
+  migrations/      ordered .sql files (research, subscriptions, citations,
+                     draft_outcomes, operator_runs, operator_subscriptions)
   tests/           pytest, mocked HTTP for research, sqlite-backed for store
 extension/    Chrome MV3 extension that posts via your browser session
-  src/background.js     polls /queue, dispatches to content scripts
+  src/background.js     polls /queue + outcome-puller alarm
+  src/outcomes.js       engagement-metric extractor (aria-label + visible-text)
   src/content-*.js      one per platform
+  tests/test_outcomes.mjs   pure-Node smoke test of the extractor
 web/          Next.js 15 + Tailwind + Supabase
   app/page.tsx          composer + draft picker + sticky action bar
-  components/           Logo, Marquee, Spotlight, Typewriter, ...
+  app/research/         research workbench + research/operator subscriptions
+  app/operator/         OperatorRun history timeline
+  lib/api.ts            typed client for every endpoint above
+  components/           Logo, Marquee, Spotlight, Typewriter, CitationsPill
+docs/         deep-dive guides — start with RESEARCH_LOOP.md and OPERATOR.md
 ```
 
 ## Research loop
+
+> Full reference: [`docs/RESEARCH_LOOP.md`](docs/RESEARCH_LOOP.md). This
+> section is the 60-second tour.
 
 Generation gets sharper when the agent has fresh signal to ground against.
 Run a research pass before generating, then opt in with `use_research: true`:
@@ -132,6 +187,58 @@ To enable the GitHub Action:
 
 The action runs hourly. The tick endpoint is idempotent — subscriptions that
 aren't due yet are skipped server-side, so over-polling is safe.
+
+## Eva operator
+
+> Full reference: [`docs/OPERATOR.md`](docs/OPERATOR.md).
+
+The operator wraps `/generate` with two things the research loop alone can't
+give you:
+
+1. **An experiment picker** — biases snippet selection toward sources whose
+   past drafts have produced engagement (via the leaderboard from outcomes).
+   Cold-start safe: falls back to plain score-desc when no outcomes exist.
+2. **An audit row** — every cycle logs product, platforms, picked snippet
+   ids, draft ids, status and a human-readable notes string. Replayable
+   from `/operator/runs` or the `/operator` page.
+
+```bash
+# one cycle, all platforms, leaderboard-weighted
+curl -X POST http://localhost:8000/operator/run \
+  -H 'content-type: application/json' \
+  -d '{"product":"<blurb>","platforms":["x","linkedin"]}'
+
+# save it as a recurring cycle on the workbench
+curl -X POST http://localhost:8000/operator/subscriptions \
+  -d '{"name":"daily-social","product":"<blurb>","platforms":["x","linkedin"]}'
+```
+
+Service-auth tick + bundled GitHub Action at
+`.github/workflows/operator-tick.yml` mirror the research-tick setup —
+enable with `OPERATOR_TICK_ENABLED=true` + `OPERATOR_TICK_URL` +
+`OPERATOR_TICK_SECRET`. Runs at minute :37 hourly, deliberately offset from
+research-tick at :17 so they don't fight for backend attention.
+
+## Extension outcome puller
+
+> Wired into the popup; off by default until you opt in.
+
+The Chrome extension already posts drafts via your browser session. The
+outcome puller closes the loop: it visits each posted-draft URL on a
+configurable cadence (default 60 min), scrapes engagement via a
+DOM-agnostic extractor, and POSTs the metrics to `/drafts/{id}/outcomes`
+so the leaderboard fills.
+
+- **Two-pass extractor:** aria-label scan first (X / Bluesky / Threads
+  carry exact counts there), then visible-text fallback
+  (LinkedIn / Mastodon). Max wins so an `aria-label="1,234 likes"`
+  beats a visible `"1.2K likes"` rounded form.
+- **Normalizes** `1,234` / `1.2K` / `1.5M` / `1B` to an int. Open metric
+  vocabulary — recognizes likes / favorites, comments / replies, reposts
+  / retweets / boosts / reblogs / shares, views / impressions, clicks,
+  saves / bookmarks.
+- **Defaults off:** opening background tabs to social pages requires
+  explicit consent via the popup toggle.
 
 ## Deploying the web app
 
