@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 from app.db import session_scope
-from app.models import Draft, ResearchSnippet, ResearchSubscription
+from app.models import Draft, DraftOutcome, ResearchSnippet, ResearchSubscription
 from app.research import Snippet
 
 
@@ -515,3 +515,185 @@ def mark_subscription_run(
         sub.last_error = error
         s.flush()
         return sub.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# Draft outcomes — engagement metrics that close the research-loop feedback.
+# ---------------------------------------------------------------------------
+
+
+# Open set on purpose so new platforms can record what they have, but keep the
+# canonical names here to guide UI / leaderboard reads.
+OUTCOME_METRIC_KINDS = frozenset(
+    {"likes", "comments", "views", "reposts", "clicks", "shares", "replies", "saves"}
+)
+
+
+def record_outcome(
+    user_id: str,
+    draft_id: str,
+    *,
+    metric_kind: str,
+    metric_value: int,
+    post_url: str | None = None,
+    observed_at: datetime | None = None,
+) -> dict | None:
+    """Append one engagement observation.
+
+    Returns the saved row, or None if the draft does not belong to ``user_id``.
+    Append-only: each call is a new row so we keep the metric timeline.
+    """
+    if metric_value < 0:
+        raise ValueError("metric_value must be non-negative")
+    if not metric_kind:
+        raise ValueError("metric_kind required")
+    with session_scope() as s:
+        draft = s.get(Draft, draft_id)
+        if draft is None or draft.user_id != user_id:
+            return None
+        outcome = DraftOutcome(
+            user_id=user_id,
+            draft_id=draft_id,
+            platform=draft.platform,
+            metric_kind=metric_kind,
+            metric_value=int(metric_value),
+            post_url=post_url or draft.post_url,
+            observed_at=observed_at or datetime.now(timezone.utc),
+        )
+        s.add(outcome)
+        s.flush()
+        return outcome.to_dict()
+
+
+def latest_outcomes_for_draft(user_id: str, draft_id: str) -> dict[str, dict]:
+    """Return the most recent observation per metric_kind for one draft.
+
+    Shape: ``{"likes": {...row...}, "comments": {...row...}}``.  Missing kinds
+    are simply absent.
+    """
+    with session_scope() as s:
+        # Cheap path: pull all rows for the draft, fold by kind.  Engagement
+        # samples per draft are tiny (a draft only has so many observations).
+        rows = (
+            s.execute(
+                select(DraftOutcome)
+                .where(DraftOutcome.user_id == user_id, DraftOutcome.draft_id == draft_id)
+                .order_by(DraftOutcome.observed_at.asc())
+            )
+            .scalars()
+            .all()
+        )
+        out: dict[str, dict] = {}
+        for row in rows:
+            out[row.metric_kind] = row.to_dict()  # later wins → most recent
+        return out
+
+
+def outcomes_for_draft(user_id: str, draft_id: str) -> list[dict]:
+    """Full append-only timeline of outcomes for a draft, oldest first."""
+    with session_scope() as s:
+        rows = (
+            s.execute(
+                select(DraftOutcome)
+                .where(DraftOutcome.user_id == user_id, DraftOutcome.draft_id == draft_id)
+                .order_by(DraftOutcome.observed_at.asc())
+            )
+            .scalars()
+            .all()
+        )
+        return [r.to_dict() for r in rows]
+
+
+def source_leaderboard(
+    user_id: str,
+    *,
+    metric_kind: str = "likes",
+    limit: int = 10,
+) -> list[dict]:
+    """Top research sources by aggregated metric value, joined via citations.
+
+    For each drafts → cited_snippet_ids → research_snippets chain, we pick
+    each draft's max observed value for ``metric_kind`` (no double-counting
+    repeated samples) and sum it up per ``research_snippets.source`` and
+    ``research_snippets.query`` pair.
+
+    Returns rows of ``{source, query, total, draft_count, top_url}``.
+    Cross-DB friendly: does the aggregation in Python so we work the same on
+    SQLite (tests) and Postgres (prod).
+    """
+    with session_scope() as s:
+        # 1. Drafts the user has owned, with citations.
+        drafts = (
+            s.execute(
+                select(Draft).where(
+                    Draft.user_id == user_id, Draft.cited_snippet_ids.is_not(None)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not drafts:
+            return []
+        draft_ids = [d.id for d in drafts]
+        # 2. Best observed metric_value per draft for the requested kind.
+        outcomes = (
+            s.execute(
+                select(DraftOutcome).where(
+                    DraftOutcome.user_id == user_id,
+                    DraftOutcome.draft_id.in_(draft_ids),
+                    DraftOutcome.metric_kind == metric_kind,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        best_per_draft: dict[str, int] = {}
+        for o in outcomes:
+            cur = best_per_draft.get(o.draft_id, 0)
+            if o.metric_value > cur:
+                best_per_draft[o.draft_id] = o.metric_value
+        if not best_per_draft:
+            return []
+        # 3. Pull every cited snippet and roll up by (source, query).
+        cited_ids: set[str] = set()
+        for d in drafts:
+            for sid in d.cited_snippet_ids or []:
+                cited_ids.add(str(sid))
+        if not cited_ids:
+            return []
+        snippets = (
+            s.execute(
+                select(ResearchSnippet).where(
+                    ResearchSnippet.user_id == user_id,
+                    ResearchSnippet.id.in_(cited_ids),
+                )
+            )
+            .scalars()
+            .all()
+        )
+        snippet_by_id: dict[str, ResearchSnippet] = {sn.id: sn for sn in snippets}
+        # 4. Aggregate.
+        agg: dict[tuple[str, str | None], dict] = {}
+        for d in drafts:
+            value = best_per_draft.get(d.id)
+            if not value:
+                continue
+            for sid in d.cited_snippet_ids or []:
+                sn = snippet_by_id.get(str(sid))
+                if sn is None:
+                    continue
+                key = (sn.source, sn.query)
+                bucket = agg.setdefault(
+                    key,
+                    {
+                        "source": sn.source,
+                        "query": sn.query,
+                        "total": 0,
+                        "draft_count": 0,
+                        "top_url": sn.url,
+                    },
+                )
+                bucket["total"] += value
+                bucket["draft_count"] += 1
+        ranked = sorted(agg.values(), key=lambda r: r["total"], reverse=True)
+        return ranked[:limit]

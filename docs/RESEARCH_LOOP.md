@@ -196,11 +196,67 @@ If step 6 returns the same count as step 3, the citation marking didn't run — 
 - **Reddit 429s under the cron.** Reddit rate-limits unauthed requests. The configured User-Agent (`fanout-research/0.1`) helps, but if you hit limits, lower your subscription `interval_hours` or shrink the query list.
 - **Citations look stale.** `cited_snippet_ids` is the source of truth on each draft. The `used_in_draft_id` field on snippets is a back-compat shortcut — if you need a definitive "what fed this draft?" answer, hit `/drafts/{id}/citations`.
 
+## Outcome feedback (closing the loop)
+
+The research loop becomes compounding only when posted drafts feed engagement
+back. The flow:
+
+```
+   /generate (with research) ─► draft.cited_snippet_ids ─► drafts get posted
+                                                                │
+                                                                ▼
+                                       POST /drafts/{id}/outcomes  (metric_kind, metric_value)
+                                                                │
+                                                                ▼
+                                                draft_outcomes  (append-only timeline)
+                                                                │
+                                                                ▼
+                                       GET /research/sources/leaderboard?metric=likes
+                                                                │
+                                                                ▼
+                                next research tick can bias toward winning sources
+```
+
+### Endpoints
+
+```bash
+# extension or polling adapter pushes a fresh metric pull
+curl -s -X POST http://localhost:8000/drafts/<id>/outcomes \
+  -H 'content-type: application/json' \
+  -d '{"metric_kind":"likes","metric_value":34}'
+# → 201 {"id":"...","metric_value":34,...}
+
+# inspect the timeline + latest-per-kind snapshot for one draft
+curl -s 'http://localhost:8000/drafts/<id>/outcomes' | jq
+# → {"draft_id":"...","latest":{"likes":{...,"metric_value":34}},"timeline":[...]}
+
+# which sources are producing engagement?
+curl -s 'http://localhost:8000/research/sources/leaderboard?metric=likes&limit=10' | jq
+# → {"metric":"likes","rows":[{"source":"hn","query":"agents","total":80,"draft_count":2,"top_url":"..."}]}
+```
+
+### Conventions
+
+- **Append-only.** Every outcome push is a new row; the per-kind "latest" is
+  the most-recent observation. Replaying the timeline is the basis for any
+  future ranking-model change.
+- **Open metric set.** `metric_kind` is free-form; the canonical names
+  (`likes`, `comments`, `views`, `reposts`, `clicks`, `shares`, `replies`,
+  `saves`) live in `store.OUTCOME_METRIC_KINDS` for UI hints, but the server
+  will accept anything platform-specific.
+- **Best-per-draft, not last-per-draft.** The leaderboard sums the max
+  observed value per draft (no double-counting repeated samples) and rolls
+  by `(source, query)` so a single hot draft can't single-handedly skew the
+  ranking after a polling client pulls the same metric every hour.
+- **Cross-DB friendly.** Aggregation runs in Python over the cited snippet
+  list, not via SQL window functions, so the leaderboard works identically
+  on SQLite (tests) and Postgres (prod).
+
 ## Where the code lives
 
 - `backend/app/research.py` — source fetchers, scoring, parallel orchestration
-- `backend/app/store.py` — snippets + subscriptions CRUD, `top_snippets_for_agent`, `mark_snippets_used`, `get_draft_citations`
-- `backend/app/main.py` — REST handlers (`/research`, `/research/suggest`, `/research/subscriptions`, `/research/tick`, `/research/tick/all`)
+- `backend/app/store.py` — snippets + subscriptions CRUD, `top_snippets_for_agent`, `mark_snippets_used`, `get_draft_citations`, **`record_outcome`, `latest_outcomes_for_draft`, `outcomes_for_draft`, `source_leaderboard`**
+- `backend/app/main.py` — REST handlers (`/research`, `/research/suggest`, `/research/subscriptions`, `/research/tick`, `/research/tick/all`, **`/drafts/{id}/outcomes`, `/research/sources/leaderboard`**)
 - `backend/app/agent.py` — `plan` / `write` / `variations` accept `research_context` and bake it into prompts
 - `web/app/research/page.tsx` — workbench UI (suggest, fetch, subscriptions list)
 - `web/components/CitationsPill.tsx` — the per-draft "N signals" pill

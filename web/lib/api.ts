@@ -134,6 +134,34 @@ export const api = {
         "/research/tick",
         { method: "POST" }
       ),
+
+    leaderboard: (metric: OutcomeMetric = "likes", limit = 10) =>
+      request<{ metric: string; rows: SourceLeaderboardRow[] }>(
+        `/research/sources/leaderboard?metric=${encodeURIComponent(metric)}&limit=${limit}`
+      ),
+  },
+
+  // --- outcomes --------------------------------------------------------------
+  outcomes: {
+    record: (
+      draftId: string,
+      input: {
+        metric_kind: OutcomeMetric;
+        metric_value: number;
+        post_url?: string;
+        observed_at?: string;
+      }
+    ) =>
+      request<DraftOutcome>(`/drafts/${draftId}/outcomes`, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    list: (draftId: string) =>
+      request<{
+        draft_id: string;
+        latest: Record<string, DraftOutcome>;
+        timeline: DraftOutcome[];
+      }>(`/drafts/${draftId}/outcomes`),
   },
 };
 
@@ -199,4 +227,37 @@ export type ResearchSubscription = {
   last_fetched_count: number | null;
   last_error: string | null;
   created_at: string;
+};
+
+// Open set on the wire; this list is the UI-facing canonical set.
+export type OutcomeMetric =
+  | "likes"
+  | "comments"
+  | "views"
+  | "reposts"
+  | "clicks"
+  | "shares"
+  | "replies"
+  | "saves";
+
+export type DraftOutcome = {
+  id: string;
+  user_id: string;
+  draft_id: string;
+  platform: Platform;
+  metric_kind: string; // not narrowed to OutcomeMetric on the way back so the
+                       // type survives a server that records a kind the UI
+                       // doesn't know about yet
+  metric_value: number;
+  post_url: string | null;
+  observed_at: string;
+  created_at: string;
+};
+
+export type SourceLeaderboardRow = {
+  source: ResearchSource;
+  query: string | null;
+  total: number;
+  draft_count: number;
+  top_url: string;
 };

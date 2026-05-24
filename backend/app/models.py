@@ -190,3 +190,48 @@ class ResearchSubscription(Base):
             "last_error": self.last_error,
             "created_at": self.created_at.isoformat(),
         }
+
+
+class DraftOutcome(Base):
+    """One observation of engagement on a posted draft.
+
+    Append-only — every metric pull (likes after 1h, likes after 24h, etc.) is
+    a new row.  Latest-per-kind is the natural read pattern.  The research
+    loop joins back via ``Draft.cited_snippet_ids`` to find which sources fed
+    drafts that performed well, then biases future top-snippet picks toward
+    those sources.
+    """
+
+    __tablename__ = "draft_outcomes"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    draft_id: Mapped[str] = mapped_column(String, index=True)
+
+    platform: Mapped[str] = mapped_column(String(32))
+    # likes | comments | views | reposts | clicks | shares | replies — open set
+    # on purpose so new platforms can record what they have without a schema bump.
+    metric_kind: Mapped[str] = mapped_column(String(32), index=True)
+    metric_value: Mapped[int] = mapped_column(Integer, default=0)
+
+    post_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    __table_args__ = (
+        Index("ix_outcomes_user_seen", "user_id", "observed_at"),
+        Index("ix_outcomes_user_kind", "user_id", "metric_kind", "observed_at"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "draft_id": self.draft_id,
+            "platform": self.platform,
+            "metric_kind": self.metric_kind,
+            "metric_value": self.metric_value,
+            "post_url": self.post_url,
+            "observed_at": self.observed_at.isoformat(),
+            "created_at": self.created_at.isoformat(),
+        }
