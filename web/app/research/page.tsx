@@ -28,9 +28,28 @@ import {
   Wand2,
   Zap,
 } from "lucide-react";
-import { api, ResearchSnippet, ResearchSource, ResearchSubscription } from "@/lib/api";
+import {
+  api,
+  OperatorRun,
+  OperatorSubscription,
+  Platform,
+  ResearchSnippet,
+  ResearchSource,
+  ResearchSubscription,
+} from "@/lib/api";
 
 const ALL_SOURCES: ResearchSource[] = ["hn", "devto", "reddit", "rss"];
+
+// Platforms exposed in the operator-panel quick-create form. Kept short on
+// purpose — fanout supports 15 channels but the operator's primary use case
+// is the auto-postable social tier; the rest can be edited via PATCH later.
+const OPERATOR_QUICK_PLATFORMS: Platform[] = [
+  "x",
+  "linkedin",
+  "threads",
+  "bluesky",
+  "mastodon",
+];
 
 const SOURCE_META: Record<ResearchSource, { label: string; tone: string }> = {
   hn: { label: "Hacker News", tone: "from-orange-500/20 to-orange-500/5 border-orange-400/30" },
@@ -67,6 +86,24 @@ export default function ResearchPage() {
   const [ticking, setTicking] = useState(false);
   const [tickResult, setTickResult] = useState<string | null>(null);
 
+  // Operator subscriptions — autonomous draft cycles on a cadence. Sibling
+  // to research subscriptions; the cron pair (/research/tick/all at :17,
+  // /operator/tick/all at :37) gives the loop full autonomy without anyone
+  // pressing a button.
+  const [opSubs, setOpSubs] = useState<OperatorSubscription[]>([]);
+  const [opSubsLoading, setOpSubsLoading] = useState(true);
+  const [opSubName, setOpSubName] = useState("");
+  const [opSubProduct, setOpSubProduct] = useState("");
+  const [opSubPlatforms, setOpSubPlatforms] = useState<Platform[]>(["x", "linkedin"]);
+  const [opSubInterval, setOpSubInterval] = useState(24);
+  const [opSubWeighted, setOpSubWeighted] = useState(true);
+  const [savingOpSub, setSavingOpSub] = useState(false);
+  const [opTicking, setOpTicking] = useState(false);
+  const [opTickResult, setOpTickResult] = useState<string | null>(null);
+
+  // Recent OperatorRuns — small audit-trail panel. Loaded alongside opSubs.
+  const [opRuns, setOpRuns] = useState<OperatorRun[]>([]);
+
   const refreshSubs = async () => {
     setSubsLoading(true);
     try {
@@ -79,8 +116,27 @@ export default function ResearchPage() {
     }
   };
 
+  const refreshOpSubs = async () => {
+    setOpSubsLoading(true);
+    try {
+      const [subs, runs] = await Promise.all([
+        api.operator.subscriptions.list(),
+        api.operator.list(5).catch(() => []),
+      ]);
+      setOpSubs(subs);
+      setOpRuns(runs);
+    } catch {
+      // Older backend (no /operator endpoints yet) → empty panel, no toast.
+      setOpSubs([]);
+      setOpRuns([]);
+    } finally {
+      setOpSubsLoading(false);
+    }
+  };
+
   useEffect(() => {
     void refreshSubs();
+    void refreshOpSubs();
   }, []);
 
   const saveCurrentAsSubscription = async () => {
@@ -148,6 +204,86 @@ export default function ResearchPage() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setTicking(false);
+    }
+  };
+
+  // ---- operator subscription handlers --------------------------------------
+
+  const toggleOpPlatform = (p: Platform) => {
+    setOpSubPlatforms((prev) =>
+      prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]
+    );
+  };
+
+  const createOpSub = async () => {
+    if (!opSubName.trim()) {
+      setError("Name the autonomous cycle so you can find it later.");
+      return;
+    }
+    if (opSubProduct.trim().length < 10) {
+      setError("Product blurb must be at least 10 chars.");
+      return;
+    }
+    if (opSubPlatforms.length === 0) {
+      setError("Pick at least one platform for the operator to draft for.");
+      return;
+    }
+    setSavingOpSub(true);
+    setError(null);
+    try {
+      await api.operator.subscriptions.create({
+        name: opSubName.trim(),
+        product: opSubProduct.trim(),
+        platforms: opSubPlatforms,
+        interval_hours: opSubInterval,
+        weight_by_leaderboard: opSubWeighted,
+      });
+      setOpSubName("");
+      setOpSubProduct("");
+      await refreshOpSubs();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingOpSub(false);
+    }
+  };
+
+  const toggleOpSubActive = async (sub: OperatorSubscription) => {
+    try {
+      await api.operator.subscriptions.update(sub.id, { active: !sub.active });
+      await refreshOpSubs();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const deleteOpSub = async (sub: OperatorSubscription) => {
+    try {
+      await api.operator.subscriptions.remove(sub.id);
+      await refreshOpSubs();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const runOpTick = async () => {
+    setOpTicking(true);
+    setError(null);
+    setOpTickResult(null);
+    try {
+      const out = await api.operator.tick();
+      const totalDrafts = out.ran.reduce((acc, r) => acc + r.drafts, 0);
+      setOpTickResult(
+        out.ran.length === 0
+          ? "Nothing was due."
+          : `Ran ${out.ran.length} subscription${out.ran.length === 1 ? "" : "s"}, produced ${totalDrafts} draft${totalDrafts === 1 ? "" : "s"}.`
+      );
+      await refreshOpSubs();
+      setTimeout(() => setOpTickResult(null), 4000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setOpTicking(false);
     }
   };
 
@@ -479,6 +615,168 @@ export default function ResearchPage() {
         )}
       </section>
 
+      <section className="rounded-xl border border-emerald-400/20 bg-emerald-500/[0.04] p-5 mb-8">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <Sparkles size={14} className="text-emerald-300" />
+            Autonomous draft cycles
+            <span className="text-xs text-white/50 font-normal">
+              {opSubs.filter((s) => s.active).length} active
+            </span>
+          </h2>
+          <button
+            onClick={runOpTick}
+            disabled={opTicking || opSubs.filter((s) => s.active).length === 0}
+            className="rounded-lg border border-emerald-400/30 bg-emerald-500/15 px-3 py-1.5 text-xs font-medium hover:bg-emerald-500/25 disabled:opacity-40 inline-flex items-center gap-1.5"
+          >
+            {opTicking ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />}
+            {opTicking ? "Running..." : "Run due now"}
+          </button>
+        </div>
+
+        <p className="text-xs text-white/55 mb-4">
+          The operator picks an experiment from your banked snippets, drafts
+          platform-tailored posts, and logs the cycle. Pair the active subs
+          with the hourly{" "}
+          <code className="font-mono text-white/70">/operator/tick/all</code>{" "}
+          cron for full autonomy.
+        </p>
+
+        <div className="rounded-lg border border-white/10 bg-black/30 p-4 mb-4 space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <input
+              type="text"
+              value={opSubName}
+              onChange={(e) => setOpSubName(e.target.value)}
+              placeholder="Cycle name (e.g. 'daily-x-linkedin')"
+              className="rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm placeholder:text-white/30 focus:outline-none focus:border-emerald-400/40"
+            />
+            <select
+              value={opSubInterval}
+              onChange={(e) => setOpSubInterval(Number(e.target.value))}
+              className="rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm focus:outline-none focus:border-emerald-400/40"
+            >
+              <option value={1}>every hour</option>
+              <option value={6}>every 6 hours</option>
+              <option value={12}>every 12 hours</option>
+              <option value={24}>daily</option>
+              <option value={48}>every 2 days</option>
+              <option value={168}>weekly</option>
+            </select>
+          </div>
+          <textarea
+            value={opSubProduct}
+            onChange={(e) => setOpSubProduct(e.target.value)}
+            placeholder="Product blurb (10+ chars) — what should the operator draft about?"
+            rows={2}
+            className="w-full rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm placeholder:text-white/30 focus:outline-none focus:border-emerald-400/40 resize-none"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] uppercase text-white/40 font-mono mr-1">
+              platforms:
+            </span>
+            {OPERATOR_QUICK_PLATFORMS.map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => toggleOpPlatform(p)}
+                className={`rounded-md px-2.5 py-1 text-xs font-mono border ${
+                  opSubPlatforms.includes(p)
+                    ? "bg-emerald-500/15 border-emerald-400/40 text-emerald-100"
+                    : "bg-white/[0.02] border-white/10 text-white/50 hover:text-white/80"
+                }`}
+                aria-pressed={opSubPlatforms.includes(p)}
+              >
+                {p}
+              </button>
+            ))}
+            <label className="ml-auto flex items-center gap-1.5 text-xs text-white/70 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={opSubWeighted}
+                onChange={(e) => setOpSubWeighted(e.target.checked)}
+                className="accent-emerald-400"
+              />
+              leaderboard-weighted
+            </label>
+            <button
+              onClick={createOpSub}
+              disabled={savingOpSub}
+              className="rounded-md border border-emerald-400/30 bg-emerald-500/15 px-3 py-1.5 text-xs font-medium hover:bg-emerald-500/25 disabled:opacity-40 inline-flex items-center gap-1.5"
+            >
+              {savingOpSub ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
+              Save cycle
+            </button>
+          </div>
+        </div>
+
+        {opTickResult && (
+          <div className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200 mb-3">
+            {opTickResult}
+          </div>
+        )}
+
+        {opSubsLoading ? (
+          <div className="text-xs text-white/40 text-center py-4">Loading...</div>
+        ) : opSubs.length === 0 ? (
+          <p className="text-xs text-white/50 text-center py-4">
+            No autonomous cycles yet. Save one above to have the operator
+            draft on a cadence.
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {opSubs.map((s) => (
+              <OperatorSubscriptionRow
+                key={s.id}
+                sub={s}
+                onToggle={() => void toggleOpSubActive(s)}
+                onDelete={() => void deleteOpSub(s)}
+              />
+            ))}
+          </ul>
+        )}
+
+        {opRuns.length > 0 && (
+          <div className="mt-4 pt-3 border-t border-white/10">
+            <h3 className="text-[11px] uppercase tracking-wide text-white/40 font-mono mb-2">
+              Recent cycles
+            </h3>
+            <ul className="space-y-1.5">
+              {opRuns.map((r) => (
+                <li
+                  key={r.id}
+                  className="flex items-center justify-between gap-3 text-xs"
+                >
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                    <span
+                      className={`inline-block w-1.5 h-1.5 rounded-full ${
+                        r.status === "ok"
+                          ? "bg-emerald-400"
+                          : r.status === "failed"
+                          ? "bg-rose-400"
+                          : "bg-amber-400"
+                      }`}
+                    />
+                    <span className="font-mono text-white/40 text-[10px]">
+                      {new Date(r.started_at).toLocaleString()}
+                    </span>
+                    <span className="text-white/60 truncate">
+                      {r.draft_ids.length} drafts ·{" "}
+                      {r.cited_snippet_ids.length} snippets
+                    </span>
+                  </div>
+                  {r.notes && (
+                    <span className="text-white/40 text-[10px] truncate max-w-[40%]">
+                      {r.notes}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </section>
+
       <section>
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
@@ -652,6 +950,94 @@ function SubscriptionRow({
             onClick={onDelete}
             className="p-1.5 rounded text-white/40 hover:text-rose-300 hover:bg-rose-500/10"
             aria-label="Delete subscription"
+            title="Delete"
+          >
+            <Trash2 size={12} />
+          </button>
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function OperatorSubscriptionRow({
+  sub,
+  onToggle,
+  onDelete,
+}: {
+  sub: OperatorSubscription;
+  onToggle: () => void;
+  onDelete: () => void;
+}) {
+  const intervalLabel =
+    sub.interval_hours === 1
+      ? "every hour"
+      : sub.interval_hours === 24
+      ? "daily"
+      : sub.interval_hours === 168
+      ? "weekly"
+      : `every ${sub.interval_hours}h`;
+
+  return (
+    <li
+      className={`rounded-lg border border-white/[0.08] bg-black/20 px-3 py-2.5 ${
+        sub.active ? "" : "opacity-60"
+      }`}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-medium truncate">{sub.name}</span>
+            <span className="text-[10px] font-mono text-white/40 uppercase">
+              {intervalLabel}
+            </span>
+            {sub.weight_by_leaderboard && (
+              <span className="text-[10px] font-mono text-emerald-300/80 uppercase">
+                weighted
+              </span>
+            )}
+            {!sub.active && (
+              <span className="text-[10px] font-mono text-amber-300/80 uppercase">
+                paused
+              </span>
+            )}
+          </div>
+          <div className="text-xs text-white/50 truncate mt-0.5">
+            {sub.platforms.join(" · ")}
+          </div>
+          <div className="text-[11px] text-white/40 truncate mt-0.5 italic">
+            {sub.product}
+          </div>
+          {(sub.last_run_at || sub.last_error) && (
+            <div className="text-[10px] text-white/40 mt-1 font-mono">
+              {sub.last_error ? (
+                <span className="text-rose-300/80">
+                  last error: {sub.last_error}
+                </span>
+              ) : (
+                <>
+                  last run{" "}
+                  <time dateTime={sub.last_run_at!}>
+                    {new Date(sub.last_run_at!).toLocaleString()}
+                  </time>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={onToggle}
+            className="p-1.5 rounded text-white/50 hover:text-white hover:bg-white/5"
+            aria-label={sub.active ? "Pause cycle" : "Resume cycle"}
+            title={sub.active ? "Pause" : "Resume"}
+          >
+            {sub.active ? <Pause size={12} /> : <Play size={12} />}
+          </button>
+          <button
+            onClick={onDelete}
+            className="p-1.5 rounded text-white/40 hover:text-rose-300 hover:bg-rose-500/10"
+            aria-label="Delete cycle"
             title="Delete"
           >
             <Trash2 size={12} />
