@@ -186,6 +186,54 @@ export const api = {
       }),
     list: (limit = 20) => request<OperatorRun[]>(`/operator/runs?limit=${limit}`),
     get: (runId: string) => request<OperatorRun>(`/operator/runs/${runId}`),
+
+    subscriptions: {
+      list: () => request<OperatorSubscription[]>("/operator/subscriptions"),
+      create: (input: {
+        name: string;
+        product: string;
+        platforms?: Platform[];
+        weight_by_leaderboard?: boolean;
+        leaderboard_metric?: OutcomeMetric;
+        snippet_limit?: number;
+        interval_hours?: number;
+        active?: boolean;
+      }) =>
+        request<OperatorSubscription>("/operator/subscriptions", {
+          method: "POST",
+          body: JSON.stringify(input),
+        }),
+      update: (id: string, patch: Partial<{
+        name: string;
+        product: string;
+        platforms: Platform[];
+        weight_by_leaderboard: boolean;
+        leaderboard_metric: OutcomeMetric;
+        snippet_limit: number;
+        interval_hours: number;
+        active: boolean;
+      }>) =>
+        request<OperatorSubscription>(`/operator/subscriptions/${id}`, {
+          method: "PATCH",
+          body: JSON.stringify(patch),
+        }),
+      remove: (id: string) =>
+        request<{ deleted: string }>(`/operator/subscriptions/${id}`, {
+          method: "DELETE",
+        }),
+    },
+
+    tick: () =>
+      request<{
+        ran: {
+          subscription_id: string;
+          name: string;
+          run_id: string | null;
+          drafts: number;
+          leaderboard_used: boolean;
+          error: string | null;
+        }[];
+      }>("/operator/tick", { method: "POST" }),
   },
 };
 
@@ -302,4 +350,21 @@ export type OperatorRun = {
   notes: string | null;
   started_at: string;
   completed_at: string | null;
+};
+
+export type OperatorSubscription = {
+  id: string;
+  user_id: string;
+  name: string;
+  product: string;
+  platforms: Platform[];
+  weight_by_leaderboard: boolean;
+  leaderboard_metric: string;
+  snippet_limit: number;
+  interval_hours: number;
+  active: boolean;
+  last_run_at: string | null;
+  last_run_id: string | null;
+  last_error: string | null;
+  created_at: string;
 };

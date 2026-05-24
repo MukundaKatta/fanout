@@ -134,6 +134,28 @@ class OperatorRunRequest(BaseModel):
     snippet_limit: int = Field(default=8, ge=1, le=20)
 
 
+class OperatorSubscriptionCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=128)
+    product: str = Field(..., min_length=10, max_length=8000)
+    platforms: list[str] = Field(default_factory=lambda: list(PLATFORMS))
+    weight_by_leaderboard: bool = True
+    leaderboard_metric: str = Field(default="likes", min_length=1, max_length=32)
+    snippet_limit: int = Field(default=8, ge=1, le=20)
+    interval_hours: int = Field(default=24, ge=1, le=24 * 7)
+    active: bool = True
+
+
+class OperatorSubscriptionUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    product: str | None = Field(default=None, min_length=10, max_length=8000)
+    platforms: list[str] | None = None
+    weight_by_leaderboard: bool | None = None
+    leaderboard_metric: str | None = Field(default=None, min_length=1, max_length=32)
+    snippet_limit: int | None = Field(default=None, ge=1, le=20)
+    interval_hours: int | None = Field(default=None, ge=1, le=24 * 7)
+    active: bool | None = None
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
@@ -593,3 +615,98 @@ def operator_run_get(run_id: str, uid: str = Depends(current_user)):
     if row is None:
         raise HTTPException(404, "Not found")
     return row
+
+
+# --- Operator subscriptions (stored configs that fire on a cadence) -----
+
+
+def _validate_platforms(platforms: list[str]) -> None:
+    invalid = [p for p in platforms if p not in PLATFORMS]
+    if invalid:
+        raise HTTPException(400, f"Invalid platforms: {invalid}. Valid: {PLATFORMS}")
+
+
+@app.post("/operator/subscriptions", status_code=201)
+def operator_subscription_create(
+    req: OperatorSubscriptionCreateRequest,
+    uid: str = Depends(current_user),
+):
+    _validate_platforms(req.platforms)
+    try:
+        return store.create_operator_subscription(
+            uid,
+            name=req.name,
+            product=req.product,
+            platforms=req.platforms,
+            weight_by_leaderboard=req.weight_by_leaderboard,
+            leaderboard_metric=req.leaderboard_metric,
+            snippet_limit=req.snippet_limit,
+            interval_hours=req.interval_hours,
+            active=req.active,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+
+@app.get("/operator/subscriptions")
+def operator_subscriptions_list(uid: str = Depends(current_user)):
+    return store.list_operator_subscriptions(uid)
+
+
+@app.patch("/operator/subscriptions/{sub_id}")
+def operator_subscription_update(
+    sub_id: str,
+    req: OperatorSubscriptionUpdateRequest,
+    uid: str = Depends(current_user),
+):
+    if req.platforms is not None:
+        _validate_platforms(req.platforms)
+    try:
+        row = store.update_operator_subscription(
+            uid,
+            sub_id,
+            name=req.name,
+            product=req.product,
+            platforms=req.platforms,
+            weight_by_leaderboard=req.weight_by_leaderboard,
+            leaderboard_metric=req.leaderboard_metric,
+            snippet_limit=req.snippet_limit,
+            interval_hours=req.interval_hours,
+            active=req.active,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    if row is None:
+        raise HTTPException(404, "Not found")
+    return row
+
+
+@app.delete("/operator/subscriptions/{sub_id}")
+def operator_subscription_delete(sub_id: str, uid: str = Depends(current_user)):
+    if not store.delete_operator_subscription(uid, sub_id):
+        raise HTTPException(404, "Not found")
+    return {"deleted": sub_id}
+
+
+@app.post("/operator/tick")
+def operator_tick(uid: str = Depends(current_user)):
+    """Run every due operator subscription belonging to the authed user."""
+    return {"ran": operator.tick_user(uid)}
+
+
+@app.post("/operator/tick/all")
+def operator_tick_all(x_tick_secret: str | None = Header(default=None)):
+    """Service-auth tick — fire every due operator subscription across all users.
+
+    Auths via ``X-Tick-Secret`` (header), gated on ``OPERATOR_TICK_SECRET``.
+    Off by default: returns 403 unless ``OPERATOR_TICK_SECRET`` is set on
+    the backend.
+    """
+    expected = os.environ.get("OPERATOR_TICK_SECRET")
+    if not expected:
+        raise HTTPException(
+            403, "Service tick disabled — set OPERATOR_TICK_SECRET on the backend to enable."
+        )
+    if not x_tick_secret or not secrets.compare_digest(x_tick_secret, expected):
+        raise HTTPException(403, "Invalid X-Tick-Secret header")
+    return {"ran": operator.tick_all()}
