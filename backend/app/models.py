@@ -235,3 +235,55 @@ class DraftOutcome(Base):
             "observed_at": self.observed_at.isoformat(),
             "created_at": self.created_at.isoformat(),
         }
+
+
+class OperatorRun(Base):
+    """One autonomous cycle of the Eva operator.
+
+    Picks an experiment (a subset of research snippets), drafts platform-
+    tailored posts, and records the snippets + drafts it produced. Becomes
+    the audit trail for "what did the operator try on 2026-05-24?" and the
+    basis for comparing weighting strategies against each other later.
+    """
+
+    __tablename__ = "operator_runs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+
+    product: Mapped[str] = mapped_column(Text)
+    platforms: Mapped[list] = mapped_column(JSON, default=list)
+    cited_snippet_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    draft_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+    weight_by_leaderboard: Mapped[bool] = mapped_column(Boolean, default=True)
+    leaderboard_metric: Mapped[str] = mapped_column(String(32), default="likes")
+
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    __table_args__ = (
+        Index("ix_operator_runs_user_started", "user_id", "started_at"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "product": self.product,
+            "platforms": list(self.platforms or []),
+            "cited_snippet_ids": list(self.cited_snippet_ids or []),
+            "draft_ids": list(self.draft_ids or []),
+            "weight_by_leaderboard": self.weight_by_leaderboard,
+            "leaderboard_metric": self.leaderboard_metric,
+            "status": self.status,
+            "error": self.error,
+            "notes": self.notes,
+            "started_at": self.started_at.isoformat(),
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+        }

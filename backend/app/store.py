@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 from app.db import session_scope
-from app.models import Draft, DraftOutcome, ResearchSnippet, ResearchSubscription
+from app.models import Draft, DraftOutcome, OperatorRun, ResearchSnippet, ResearchSubscription
 from app.research import Snippet
 
 
@@ -697,3 +697,150 @@ def source_leaderboard(
                 bucket["draft_count"] += 1
         ranked = sorted(agg.values(), key=lambda r: r["total"], reverse=True)
         return ranked[:limit]
+
+
+# ---------------------------------------------------------------------------
+# Eva operator — autonomous experiment picker + draft generator audit trail.
+# ---------------------------------------------------------------------------
+
+
+def select_experiment_snippets(
+    user_id: str,
+    *,
+    limit: int = 8,
+    weight_by_leaderboard: bool = True,
+    leaderboard_metric: str = "likes",
+) -> dict:
+    """Pick the snippets for one autonomous operator cycle.
+
+    Returns:
+        {
+            "snippets": [...up to ``limit`` rows...],
+            "leaderboard_used": bool,        # True only when boosting actually changed picks
+            "winning_sources": [(source, query), ...],
+        }
+
+    Cold-start safe: with no leaderboard signal, falls back to
+    ``top_snippets_for_agent`` (score desc among unused).
+    """
+    candidates = list_snippets(user_id, only_unused=True, limit=limit * 3)
+    if not candidates:
+        return {"snippets": [], "leaderboard_used": False, "winning_sources": []}
+
+    if not weight_by_leaderboard:
+        return {
+            "snippets": candidates[:limit],
+            "leaderboard_used": False,
+            "winning_sources": [],
+        }
+
+    board = source_leaderboard(user_id, metric_kind=leaderboard_metric, limit=20)
+    winners: dict[tuple[str, str | None], int] = {}
+    for row in board:
+        winners[(row["source"], row["query"])] = row["total"]
+    if not winners:
+        # Cold-start: keep the score-only ordering, just trim.
+        return {
+            "snippets": candidates[:limit],
+            "leaderboard_used": False,
+            "winning_sources": [],
+        }
+
+    # Score = raw_score + leaderboard_boost.  We want leaderboard signal to
+    # be the dominant factor once it exists, so the top winner contributes
+    # boost = 1.0 — strong enough to outrank a non-winner snippet at raw
+    # score 0.95.  Non-winning sources contribute nothing.  Raw score still
+    # breaks ties within the same (source, query) bucket so freshness +
+    # popularity continue to matter.
+    max_total = max(winners.values())
+
+    def boosted_score(snip: dict) -> float:
+        boost = winners.get((snip["source"], snip.get("query")), 0)
+        normalized = boost / max_total if max_total else 0.0
+        return (snip.get("score") or 0.0) + normalized
+
+    reordered = sorted(candidates, key=boosted_score, reverse=True)[:limit]
+    return {
+        "snippets": reordered,
+        "leaderboard_used": True,
+        "winning_sources": [{"source": s, "query": q} for (s, q) in winners.keys()],
+    }
+
+
+def start_operator_run(
+    user_id: str,
+    *,
+    product: str,
+    platforms: list[str],
+    weight_by_leaderboard: bool,
+    leaderboard_metric: str,
+) -> dict:
+    """Insert an OperatorRun row in ``pending`` status. Returns the dict view."""
+    with session_scope() as s:
+        row = OperatorRun(
+            user_id=user_id,
+            product=product,
+            platforms=list(platforms),
+            weight_by_leaderboard=bool(weight_by_leaderboard),
+            leaderboard_metric=leaderboard_metric,
+            status="pending",
+        )
+        s.add(row)
+        s.flush()
+        return row.to_dict()
+
+
+def complete_operator_run(
+    user_id: str,
+    run_id: str,
+    *,
+    cited_snippet_ids: list[str],
+    draft_ids: list[str],
+    notes: str | None = None,
+) -> dict | None:
+    with session_scope() as s:
+        row = s.get(OperatorRun, run_id)
+        if row is None or row.user_id != user_id:
+            return None
+        row.cited_snippet_ids = list(cited_snippet_ids)
+        row.draft_ids = list(draft_ids)
+        row.notes = notes
+        row.status = "ok"
+        row.completed_at = datetime.now(timezone.utc)
+        s.flush()
+        return row.to_dict()
+
+
+def fail_operator_run(user_id: str, run_id: str, *, error: str) -> dict | None:
+    with session_scope() as s:
+        row = s.get(OperatorRun, run_id)
+        if row is None or row.user_id != user_id:
+            return None
+        row.status = "failed"
+        row.error = error
+        row.completed_at = datetime.now(timezone.utc)
+        s.flush()
+        return row.to_dict()
+
+
+def list_operator_runs(user_id: str, *, limit: int = 20) -> list[dict]:
+    with session_scope() as s:
+        rows = (
+            s.execute(
+                select(OperatorRun)
+                .where(OperatorRun.user_id == user_id)
+                .order_by(OperatorRun.started_at.desc())
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
+        return [r.to_dict() for r in rows]
+
+
+def get_operator_run(user_id: str, run_id: str) -> dict | None:
+    with session_scope() as s:
+        row = s.get(OperatorRun, run_id)
+        if row is None or row.user_id != user_id:
+            return None
+        return row.to_dict()

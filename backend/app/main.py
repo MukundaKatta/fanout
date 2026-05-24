@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
-from app import store  # noqa: E402
+from app import operator, store  # noqa: E402
 from app.agent import PLATFORMS, SocialAgent  # noqa: E402
 from app.auth import current_user  # noqa: E402
 from app.db import init_db  # noqa: E402
@@ -117,6 +117,21 @@ class OutcomeReport(BaseModel):
     metric_value: int = Field(..., ge=0)
     post_url: str | None = None
     observed_at: datetime | None = None
+
+
+class OperatorRunRequest(BaseModel):
+    """Parameters for one Eva operator cycle.
+
+    ``weight_by_leaderboard`` defaults true so the operator self-tunes once
+    outcomes start flowing in; cold-start safely falls back to score-only
+    picking with no leaderboard signal.
+    """
+
+    product: str = Field(..., min_length=10, max_length=8000)
+    platforms: list[str] = Field(default_factory=lambda: list(PLATFORMS))
+    weight_by_leaderboard: bool = True
+    leaderboard_metric: str = Field(default="likes", min_length=1, max_length=32)
+    snippet_limit: int = Field(default=8, ge=1, le=20)
 
 
 @app.get("/health")
@@ -528,3 +543,53 @@ def source_leaderboard(
         "metric": metric,
         "rows": store.source_leaderboard(uid, metric_kind=metric, limit=limit),
     }
+
+
+# ---------------------------------------------------------------------------
+# Eva operator — autonomous draft cycle.
+# ---------------------------------------------------------------------------
+
+
+@app.post("/operator/run")
+def operator_run(req: OperatorRunRequest, uid: str = Depends(current_user)):
+    """Run one autonomous Eva cycle: pick → draft → log.
+
+    Returns the OperatorRun id, the agent plan, the drafts produced, the
+    snippets the operator picked, and whether leaderboard weighting actually
+    influenced the picks (false during cold-start).
+    """
+    try:
+        result = operator.run(
+            uid,
+            product=req.product,
+            platforms=req.platforms,
+            weight_by_leaderboard=req.weight_by_leaderboard,
+            leaderboard_metric=req.leaderboard_metric,
+            snippet_limit=req.snippet_limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {
+        "operator_run_id": result.run_id,
+        "plan": result.plan,
+        "drafts": result.drafts,
+        "picked_snippets": result.picked_snippets,
+        "leaderboard_used": result.leaderboard_used,
+        "winning_sources": result.winning_sources,
+    }
+
+
+@app.get("/operator/runs")
+def operator_runs_list(limit: int = 20, uid: str = Depends(current_user)):
+    """Audit trail: most-recent operator cycles first."""
+    if limit < 1 or limit > 100:
+        raise HTTPException(422, "limit must be 1..100")
+    return store.list_operator_runs(uid, limit=limit)
+
+
+@app.get("/operator/runs/{run_id}")
+def operator_run_get(run_id: str, uid: str = Depends(current_user)):
+    row = store.get_operator_run(uid, run_id)
+    if row is None:
+        raise HTTPException(404, "Not found")
+    return row

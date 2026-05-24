@@ -163,6 +163,30 @@ export const api = {
         timeline: DraftOutcome[];
       }>(`/drafts/${draftId}/outcomes`),
   },
+
+  // --- operator (Eva) --------------------------------------------------------
+  operator: {
+    run: (input: {
+      product: string;
+      platforms?: Platform[];
+      weight_by_leaderboard?: boolean;
+      leaderboard_metric?: OutcomeMetric;
+      snippet_limit?: number;
+    }) =>
+      request<{
+        operator_run_id: string;
+        plan: Record<string, unknown>;
+        drafts: Draft[];
+        picked_snippets: ResearchSnippet[];
+        leaderboard_used: boolean;
+        winning_sources: { source: ResearchSource; query: string | null }[];
+      }>("/operator/run", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    list: (limit = 20) => request<OperatorRun[]>(`/operator/runs?limit=${limit}`),
+    get: (runId: string) => request<OperatorRun>(`/operator/runs/${runId}`),
+  },
 };
 
 export type Status = "pending" | "queued" | "scheduled" | "posting" | "posted" | "failed";
@@ -260,4 +284,22 @@ export type SourceLeaderboardRow = {
   total: number;
   draft_count: number;
   top_url: string;
+};
+
+export type OperatorRunStatus = "pending" | "ok" | "failed";
+
+export type OperatorRun = {
+  id: string;
+  user_id: string;
+  product: string;
+  platforms: Platform[];
+  cited_snippet_ids: string[];
+  draft_ids: string[];
+  weight_by_leaderboard: boolean;
+  leaderboard_metric: string;
+  status: OperatorRunStatus;
+  error: string | null;
+  notes: string | null;
+  started_at: string;
+  completed_at: string | null;
 };
