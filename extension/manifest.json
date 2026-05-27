@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Fanout Poster",
-  "version": "0.5.0",
+  "version": "0.4.3",
   "description": "Posts Fanout drafts to LinkedIn, X, Threads, Bluesky, Mastodon, Instagram, Reddit, and more — from your own browser session. Optionally scrapes engagement metrics off posted-draft URLs to feed the operator leaderboard.",
   "permissions": [
     "storage",
