@@ -1,5 +1,5 @@
 fastapi>=0.141.1
-uvicorn[standard]>=0.51.0
+uvicorn[standard]>=0.52.0
 groq>=1.6.0
 python-dotenv>=1.2.2
 trafilatura>=2.1.0
