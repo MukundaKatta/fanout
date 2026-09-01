@@ -260,6 +260,34 @@ The repo includes [`.github/workflows/deploy-web.yml`](.github/workflows/deploy-
 
 This lets CI gate the deploy and post the live URL back to the commit.
 
+## Tests
+
+Two backend test suites, by design:
+
+```bash
+# Full suite — needs the backend deps installed (FastAPI, SQLAlchemy, …).
+# sqlite-backed store tests + mocked-HTTP research tests + operator/agent tests.
+cd backend
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pytest tests/ -q
+
+# Dependency-free smoke suite — pure standard library, runs from a clean
+# checkout with nothing installed. Locks down the research loop's scoring,
+# recency decay, ISO/RFC-822 parsing, dedup, and prompt formatting.
+python3 -m unittest discover -s tests          # run from the repo root
+```
+
+The stdlib suite (`tests/`) imports only `app.research`, which is itself
+standard-library-only, so it doubles as a guard that the research module never
+silently grows a third-party dependency. The extension has its own pure-Node
+smoke test:
+
+```bash
+node extension/tests/test_outcomes.mjs
+```
+
+All three run in CI (`.github/workflows/ci.yml`).
+
 ## Security
 
 See [SECURITY.md](SECURITY.md). Short version: the backend never holds your social

@@ -20,6 +20,22 @@ jobs:
       - name: Validate repository contract
         run: python3 scripts/check_repo_layout.py
 
+  research-stdlib:
+    name: Research loop (stdlib unittest, no deps)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # Pure-standard-library smoke check of the research loop's scoring /
+      # parsing / dedup logic. Installs nothing, so it fails fast and proves
+      # app.research stays dependency-free.
+      - name: Run stdlib unittest suite
+        run: python3 -m unittest discover -s tests -v
+
   backend:
     name: Backend (Python)
     runs-on: ubuntu-latest
@@ -117,6 +133,7 @@ jobs:
                   assert os.path.exists(js), f"missing file: {js}"
           assert os.path.exists(m["background"]["service_worker"])
           print("OK — all referenced files exist")
+          PY
 
       - uses: actions/setup-node@v6
         with:
@@ -131,4 +148,3 @@ jobs:
 
       - name: Run outcome-extractor tests
         run: node tests/test_outcomes.mjs
-          PY
