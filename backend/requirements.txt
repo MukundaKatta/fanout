@@ -5,5 +5,5 @@ python-dotenv>=1.2.3
 trafilatura>=2.2.0
 pydantic>=2.13.4
 sqlalchemy>=2.0.52
-psycopg[binary]>=3.3.4
+psycopg[binary]>=3.3.5
 pyjwt>=2.13.0
