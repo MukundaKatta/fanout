@@ -58,6 +58,8 @@ cd web && npm run dev
 
 ## Testing tips
 
+- **Full backend suite:** `cd backend && .venv/bin/pytest tests/ -q` (needs deps installed).
+- **Dependency-free smoke suite:** `python3 -m unittest discover -s tests` from the repo root — pure standard library, no install required, covers the `app.research` scoring/parsing/dedup logic.
 - Generate tests against Groq live (`.venv/bin/python /tmp/test_platforms.py` — see `docs/`).
 - Extension debugging: `chrome://extensions` → Fanout → "Inspect views: service worker" for background logs, or open any target platform tab and open DevTools for content script logs.
 - Backend: `uvicorn --reload` picks up changes automatically.
