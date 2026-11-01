@@ -252,11 +252,58 @@ curl -s 'http://localhost:8000/research/sources/leaderboard?metric=likes&limit=1
   list, not via SQL window functions, so the leaderboard works identically
   on SQLite (tests) and Postgres (prod).
 
+## Engagement analytics
+
+The leaderboard answers "which *sources* work?"; `/analytics/engagement`
+answers "which *channels* work, and is it trending up?". It reads the same
+`draft_outcomes` rows and is what the web `/analytics` page renders.
+
+```bash
+# last 30 days, daily buckets (defaults)
+curl -s 'http://localhost:8000/analytics/engagement' | jq
+
+# last 90 days, weekly buckets (Monday-aligned), Bluesky only
+curl -s 'http://localhost:8000/analytics/engagement?days=90&bucket=week&platform=bluesky' | jq
+# → {
+#     "window": {"days":90,"bucket":"week","since":"...","until":"...","platform":"bluesky"},
+#     "metric_kinds": ["comments","likes","views"],
+#     "totals": {"likes":717,"comments":112,"views":19863},
+#     "draft_count": 4,
+#     "channels": [{"platform":"bluesky","draft_count":4,
+#                   "totals":{...},"per_draft":{"likes":179.25,...},
+#                   "engagement":829,
+#                   "top_draft":{"draft_id":"...","metric_kind":"likes","metric_value":310,"post_url":"..."}}],
+#     "timeseries": [{"bucket_start":"2026-08-03","totals":{"likes":41,...}}, ...]
+#   }
+```
+
+| Param | Default | Notes |
+| --- | --- | --- |
+| `days` | `30` | `1..365`; the window ends at now and starts at the beginning of a whole bucket |
+| `bucket` | `day` | `day` or `week` (ISO weeks, Monday start); empty buckets are zero-filled |
+| `platform` | — | restrict to one channel |
+
+How values are counted:
+
+- **Gains, not sums.** Outcome rows are cumulative snapshots, so each
+  observation counts only how far it raises that draft's running max for its
+  `metric_kind`. 10 → 25 → 40 likes is 40 likes, attributed 10/15/15 to the
+  buckets they landed in. The time series sums to the channel totals, which
+  sum to the headline totals.
+- **Never negative.** A scrape that reports fewer likes than before adds 0.
+- **Earned in the window.** Observations before `since` seed the baseline,
+  so an old post only contributes what it gained inside the window. Over an
+  all-time window this collapses to best-per-draft, matching the leaderboard.
+- **Views are not engagement.** `views` show up in `totals` but are left out
+  of a channel's `engagement` score (what channels are ranked by) and only
+  pick the channel's `top_draft` when nothing else was recorded.
+
 ## Where the code lives
 
 - `backend/app/research.py` — source fetchers, scoring, parallel orchestration
-- `backend/app/store.py` — snippets + subscriptions CRUD, `top_snippets_for_agent`, `mark_snippets_used`, `get_draft_citations`, **`record_outcome`, `latest_outcomes_for_draft`, `outcomes_for_draft`, `source_leaderboard`**
-- `backend/app/main.py` — REST handlers (`/research`, `/research/suggest`, `/research/subscriptions`, `/research/tick`, `/research/tick/all`, **`/drafts/{id}/outcomes`, `/research/sources/leaderboard`**)
+- `backend/app/store.py` — snippets + subscriptions CRUD, `top_snippets_for_agent`, `mark_snippets_used`, `get_draft_citations`, **`record_outcome`, `latest_outcomes_for_draft`, `outcomes_for_draft`, `source_leaderboard`, `engagement_analytics`**
+- `backend/app/main.py` — REST handlers (`/research`, `/research/suggest`, `/research/subscriptions`, `/research/tick`, `/research/tick/all`, **`/drafts/{id}/outcomes`, `/research/sources/leaderboard`, `/analytics/engagement`**)
 - `backend/app/agent.py` — `plan` / `write` / `variations` accept `research_context` and bake it into prompts
 - `web/app/research/page.tsx` — workbench UI (suggest, fetch, subscriptions list)
+- `web/app/analytics/page.tsx` — per-channel table + time-series chart over `/analytics/engagement`
 - `web/components/CitationsPill.tsx` — the per-draft "N signals" pill

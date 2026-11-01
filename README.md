@@ -13,7 +13,7 @@ Agentic content studio for indie shippers. One product description → 5 distinc
 ```
                        ┌────────────────────────────────────────────┐
                        │           web (Next.js 15 + Tailwind)       │
-                       │   /  composer  ·  /research  ·  /operator   │
+                       │ / · /research · /operator · /analytics      │
                        └─────────────────┬──────────────────────────┘
                                          │ REST
                                          ▼
@@ -23,7 +23,7 @@ Agentic content studio for indie shippers. One product description → 5 distinc
    │   /generate  /variations            ─►  Groq (free Llama 3.3)  │
    │   /research /research/sources/lead.   ─►  HN · Dev.to · Reddit │
    │   /operator/run /operator/tick/all          · RSS              │
-   │   /drafts /drafts/{id}/outcomes                                │
+   │   /drafts /drafts/{id}/outcomes  /analytics/engagement         │
    │   /queue /posted                                               │
    └─────────────┬─────────────────────────────────────────────────┘
                  │ polls every 30s          ▲
@@ -65,6 +65,7 @@ on live signals alone. They compose, they don't depend on each other.
 | --- | --- | --- |
 | **Research** | `POST /research` (manual), `POST /research/tick/all` (cron) | `docs/RESEARCH_LOOP.md` |
 | **Outcome feedback** | `POST /drafts/{id}/outcomes`, `GET /research/sources/leaderboard` | `docs/RESEARCH_LOOP.md#outcome-feedback-closing-the-loop` |
+| **Engagement analytics** | `GET /analytics/engagement`, web `/analytics` | `docs/RESEARCH_LOOP.md#engagement-analytics` |
 | **Operator** | `POST /operator/run` (manual), `POST /operator/tick/all` (cron) | `docs/OPERATOR.md` |
 | **Extension outcome puller** | Background tabs on a configurable cadence | `extension/src/outcomes.js`, popup toggle |
 
@@ -123,6 +124,7 @@ web/          Next.js 15 + Tailwind + Supabase
   app/page.tsx          composer + draft picker + sticky action bar
   app/research/         research workbench + research/operator subscriptions
   app/operator/         OperatorRun history timeline
+  app/analytics/        per-channel + over-time engagement rollup
   lib/api.ts            typed client for every endpoint above
   components/           Logo, Marquee, Spotlight, Typewriter, CitationsPill
 docs/         deep-dive guides — start with RESEARCH_LOOP.md and OPERATOR.md
