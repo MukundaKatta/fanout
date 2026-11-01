@@ -707,6 +707,162 @@ def source_leaderboard(
 
 
 # ---------------------------------------------------------------------------
+# Engagement analytics — per-channel + over-time rollups of draft outcomes.
+# ---------------------------------------------------------------------------
+
+
+ANALYTICS_BUCKETS = frozenset({"day", "week"})
+# Impressions, not interactions — kept in totals but left out of the
+# single "engagement" score channels are ranked by, or views would swamp it.
+NON_ENGAGEMENT_KINDS = frozenset({"views"})
+
+
+def _as_utc(value: datetime) -> datetime:
+    # SQLite hands back naive datetimes; Postgres returns aware ones.
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def _bucket_start(value: datetime, bucket: str) -> datetime:
+    day = value.replace(hour=0, minute=0, second=0, microsecond=0)
+    if bucket == "week":
+        day -= timedelta(days=day.weekday())  # ISO week → Monday
+    return day
+
+
+def engagement_analytics(
+    user_id: str,
+    *,
+    days: int = 30,
+    bucket: str = "day",
+    platform: str | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Aggregate draft outcomes per channel and over time.
+
+    Outcome rows are *cumulative snapshots* (likes after 1h, after 24h, ...),
+    so summing raw values would double-count.  Instead each observation is
+    converted to a **gain**: how far it pushes the draft's running max for
+    that metric_kind (clamped at 0, so a scrape glitch that reports fewer
+    likes never subtracts).  Gains are attributed to the bucket the
+    observation landed in.  That makes every view consistent: the time
+    series sums to the per-channel totals, which sum to the headline totals,
+    and over an all-time window a draft contributes exactly its best value —
+    the same "best-per-draft" rule ``source_leaderboard`` uses.
+
+    Observations before the window still seed the running max, so a draft
+    posted last month only counts engagement it *earned* inside the window.
+
+    Aggregation runs in Python for SQLite/Postgres parity.
+    """
+    if days < 1:
+        raise ValueError("days must be >= 1")
+    if bucket not in ANALYTICS_BUCKETS:
+        raise ValueError(f"bucket must be one of {sorted(ANALYTICS_BUCKETS)}")
+
+    now = _as_utc(now or datetime.now(timezone.utc))
+    # Window is whole buckets ending with the one containing ``now``; for
+    # weekly buckets ``since`` snaps back to a Monday so no bucket is partial.
+    until = now
+    since = _bucket_start(_bucket_start(now, "day") - timedelta(days=days - 1), bucket)
+
+    with session_scope() as s:
+        query = select(DraftOutcome).where(
+            DraftOutcome.user_id == user_id, DraftOutcome.observed_at <= until
+        )
+        if platform:
+            query = query.where(DraftOutcome.platform == platform)
+        rows = s.execute(query.order_by(DraftOutcome.observed_at.asc())).scalars().all()
+
+        running_max: dict[tuple[str, str], int] = {}
+        totals: dict[str, int] = {}
+        channels: dict[str, dict] = {}
+        series: dict[datetime, dict[str, int]] = {}
+        drafts_in_window: set[str] = set()
+        kinds: set[str] = set()
+
+        for row in rows:
+            observed = _as_utc(row.observed_at)
+            key = (row.draft_id, row.metric_kind)
+            prev = running_max.get(key, 0)
+            gain = max(0, row.metric_value - prev)
+            if row.metric_value > prev:
+                running_max[key] = row.metric_value
+            if observed < since:
+                continue  # only seeds the baseline
+
+            kind = row.metric_kind
+            kinds.add(kind)
+            drafts_in_window.add(row.draft_id)
+            channel = channels.setdefault(
+                row.platform,
+                {"platform": row.platform, "draft_ids": set(), "totals": {}, "best": None},
+            )
+            channel["draft_ids"].add(row.draft_id)
+            channel["totals"][kind] = channel["totals"].get(kind, 0) + gain
+            totals[kind] = totals.get(kind, 0) + gain
+            b = series.setdefault(_bucket_start(observed, bucket), {})
+            b[kind] = b.get(kind, 0) + gain
+
+            # Best post prefers interaction kinds; views only win when a
+            # channel has nothing else, since raw impressions dwarf likes.
+            rank = (kind not in NON_ENGAGEMENT_KINDS, row.metric_value)
+            best = channel["best"]
+            if best is None or rank > (
+                best["metric_kind"] not in NON_ENGAGEMENT_KINDS,
+                best["metric_value"],
+            ):
+                channel["best"] = {
+                    "draft_id": row.draft_id,
+                    "metric_kind": kind,
+                    "metric_value": row.metric_value,
+                    "post_url": row.post_url,
+                }
+
+    step = timedelta(days=7 if bucket == "week" else 1)
+    timeseries = []
+    cursor = since
+    while cursor <= until:
+        timeseries.append(
+            {"bucket_start": cursor.date().isoformat(), "totals": series.get(cursor, {})}
+        )
+        cursor += step
+
+    channel_rows = []
+    for ch in channels.values():
+        draft_count = len(ch["draft_ids"])
+        channel_rows.append(
+            {
+                "platform": ch["platform"],
+                "draft_count": draft_count,
+                "totals": ch["totals"],
+                "per_draft": {
+                    k: round(v / draft_count, 2) for k, v in ch["totals"].items()
+                },
+                "engagement": sum(
+                    v for k, v in ch["totals"].items() if k not in NON_ENGAGEMENT_KINDS
+                ),
+                "top_draft": ch["best"],
+            }
+        )
+    channel_rows.sort(key=lambda r: (-r["engagement"], r["platform"]))
+
+    return {
+        "window": {
+            "days": days,
+            "bucket": bucket,
+            "since": since.isoformat(),
+            "until": until.isoformat(),
+            "platform": platform,
+        },
+        "metric_kinds": sorted(kinds),
+        "totals": totals,
+        "draft_count": len(drafts_in_window),
+        "channels": channel_rows,
+        "timeseries": timeseries,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Eva operator — autonomous experiment picker + draft generator audit trail.
 # ---------------------------------------------------------------------------
 
