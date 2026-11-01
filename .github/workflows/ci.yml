@@ -70,7 +70,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -118,7 +118,7 @@ jobs:
           assert os.path.exists(m["background"]["service_worker"])
           print("OK — all referenced files exist")
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
 
