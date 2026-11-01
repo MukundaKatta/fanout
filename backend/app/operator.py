@@ -157,6 +157,10 @@ def _run_due(due: list[dict], *, agent: SocialAgent | None) -> list[dict]:
     out: list[dict] = []
     for sub in due:
         sub_id = sub["id"]
+        # Skip subs another overlapping tick already claimed — otherwise the
+        # same subscription fires twice (duplicate drafts, double Groq spend).
+        if not store.claim_operator_subscription(sub):
+            continue
         try:
             result = run(
                 sub["user_id"],

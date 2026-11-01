@@ -49,8 +49,10 @@ export const api = {
     }),
   list: () => request<Draft[]>("/drafts"),
   edit: (id: string, content: string) =>
-    request<Draft>(`/drafts/${id}?content=${encodeURIComponent(content)}`, {
+    // Body, not query string: long-form drafts overflow URL length limits.
+    request<Draft>(`/drafts/${id}`, {
       method: "PATCH",
+      body: JSON.stringify({ content }),
     }),
   queue: (id: string) => request<Draft>(`/drafts/${id}/queue`, { method: "POST" }),
   queueBulk: (ids: string[]) =>
@@ -237,7 +239,14 @@ export const api = {
   },
 };
 
-export type Status = "pending" | "queued" | "scheduled" | "posting" | "posted" | "failed";
+export type Status =
+  | "pending"
+  | "review_required"
+  | "queued"
+  | "scheduled"
+  | "posting"
+  | "posted"
+  | "failed";
 export type Platform =
   | "linkedin"
   | "x"

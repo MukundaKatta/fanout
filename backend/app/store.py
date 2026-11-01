@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 
 from app.db import session_scope
 from app.models import (
@@ -167,7 +167,10 @@ def set_review_checkpoint(user_id: str, draft_id: str, confidence: float, notes:
         d = s.get(Draft, draft_id)
         if not d or d.user_id != user_id:
             return None
-        current_plan = d.plan or {}
+        # Build a *new* dict: the JSON column isn't mutation-tracked, so
+        # mutating ``d.plan`` in place and re-assigning the same object is
+        # invisible to SQLAlchemy and the review metadata is never written.
+        current_plan = dict(d.plan or {})
         adapter = channel_adapter_contract(d.platform)
         current_plan["review"] = {
             "confidence": round(confidence, 3),
@@ -185,8 +188,8 @@ def approve_review(user_id: str, draft_id: str, reviewer: str) -> dict | None:
         d = s.get(Draft, draft_id)
         if not d or d.user_id != user_id:
             return None
-        current_plan = d.plan or {}
-        review = current_plan.get("review", {})
+        current_plan = dict(d.plan or {})  # new object → change is detected
+        review = dict(current_plan.get("review") or {})
         review["approved_by"] = reviewer
         review["requires_review"] = False
         current_plan["review"] = review
@@ -278,6 +281,10 @@ def mark_failed(user_id: str, draft_id: str, error: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
+_QUERY_MAX = ResearchSnippet.__table__.c.query.type.length
+_AUTHOR_MAX = ResearchSnippet.__table__.c.author.type.length
+
+
 def upsert_snippets(user_id: str, snippets: list[Snippet]) -> list[dict]:
     """Persist research snippets, deduping on (user_id, url).
 
@@ -291,6 +298,11 @@ def upsert_snippets(user_id: str, snippets: list[Snippet]) -> list[dict]:
     out: list[dict] = []
     with session_scope() as s:
         for snip in snippets:
+            # Clamp to the column widths: Postgres rejects over-long values
+            # (``query`` is the raw RSS URL / user query, ``author`` can be a
+            # long dc:creator list), and one bad row aborted the whole batch.
+            query = snip.query[:_QUERY_MAX] if snip.query else snip.query
+            author = snip.author[:_AUTHOR_MAX] if snip.author else snip.author
             existing = s.scalar(
                 select(ResearchSnippet)
                 .where(ResearchSnippet.user_id == user_id)
@@ -300,11 +312,11 @@ def upsert_snippets(user_id: str, snippets: list[Snippet]) -> list[dict]:
                 row = ResearchSnippet(
                     user_id=user_id,
                     source=snip.source,
-                    query=snip.query,
+                    query=query,
                     url=snip.url,
                     title=snip.title,
                     snippet=snip.snippet,
-                    author=snip.author,
+                    author=author,
                     score=snip.score,
                     published_at=snip.published_at,
                     extra=snip.extra or None,
@@ -317,7 +329,7 @@ def upsert_snippets(user_id: str, snippets: list[Snippet]) -> list[dict]:
                 existing.score = snip.score
                 existing.title = snip.title
                 existing.snippet = snip.snippet or existing.snippet
-                existing.author = snip.author or existing.author
+                existing.author = author or existing.author
                 existing.published_at = snip.published_at or existing.published_at
                 existing.extra = snip.extra or existing.extra
                 s.flush()
@@ -502,6 +514,44 @@ def due_subscriptions(*, user_id: str | None = None, now: datetime | None = None
             if now - last >= timedelta(hours=sub.interval_hours):
                 out.append(sub.to_dict())
         return out
+
+
+def _claim_due_row(model, sub_id: str, *, interval_hours: int, now: datetime | None = None) -> bool:
+    """Atomically stamp ``last_run_at`` on a due subscription row.
+
+    ``due_*`` reads are snapshot-in-time; a run takes seconds to minutes (LLM
+    calls), so two overlapping ticks (hourly cron + "Run due now", or a slow
+    cron overlapping the next one) used to both see the same row as due and
+    fire it twice. A single conditional UPDATE is atomic on Postgres and
+    SQLite alike: only the first claimer matches the ``last_run_at`` guard,
+    later claimers get rowcount 0 and must skip.
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=interval_hours)
+    with session_scope() as s:
+        res = s.execute(
+            update(model)
+            .where(model.id == sub_id)
+            .where(model.active.is_(True))
+            .where(or_(model.last_run_at.is_(None), model.last_run_at <= cutoff))
+            .values(last_run_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        return res.rowcount == 1
+
+
+def claim_subscription(sub: dict, *, now: datetime | None = None) -> bool:
+    """Claim a due research subscription for this tick. False → someone else has it."""
+    return _claim_due_row(
+        ResearchSubscription, sub["id"], interval_hours=sub["interval_hours"], now=now
+    )
+
+
+def claim_operator_subscription(sub: dict, *, now: datetime | None = None) -> bool:
+    """Claim a due operator subscription for this tick. False → someone else has it."""
+    return _claim_due_row(
+        OperatorSubscription, sub["id"], interval_hours=sub["interval_hours"], now=now
+    )
 
 
 def mark_subscription_run(

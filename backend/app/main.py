@@ -249,6 +249,9 @@ def research_list(
     limit: int = 50,
     uid: str = Depends(current_user),
 ):
+    # Postgres rejects a negative LIMIT (500); an unbounded one dumps the table.
+    if limit < 1 or limit > 500:
+        raise HTTPException(422, "limit must be 1..500")
     return store.list_snippets(uid, source=source, only_unused=only_unused, limit=limit)
 
 
@@ -353,6 +356,8 @@ def research_tick(uid: str = Depends(current_user)):
     due = store.due_subscriptions(user_id=uid)
     ran: list[dict] = []
     for sub in due:
+        if not store.claim_subscription(sub):
+            continue  # already claimed by an overlapping tick
         fetched, error = _run_subscription(sub)
         store.mark_subscription_run(sub["id"], fetched=fetched, error=error)
         ran.append({"id": sub["id"], "name": sub["name"], "fetched": fetched, "error": error})
@@ -380,6 +385,8 @@ def research_tick_all(x_tick_secret: str | None = Header(default=None)):
     due = store.due_subscriptions()  # no user filter → all active subs
     ran: list[dict] = []
     for sub in due:
+        if not store.claim_subscription(sub):
+            continue  # already claimed by an overlapping tick
         fetched, error = _run_subscription(sub)
         store.mark_subscription_run(sub["id"], fetched=fetched, error=error)
         ran.append(
@@ -439,9 +446,28 @@ def adapter_contract(platform: str, uid: str = Depends(current_user)):
     return {"user_id": uid, "adapter": adapter}
 
 
+class DraftUpdateRequest(BaseModel):
+    content: str = Field(..., min_length=1)
+
+
 @app.patch("/drafts/{draft_id}")
-def update_draft(draft_id: str, content: str, uid: str = Depends(current_user)):
-    d = store.update_content(uid, draft_id, content)
+def update_draft(
+    draft_id: str,
+    body: DraftUpdateRequest | None = None,
+    content: str | None = None,
+    uid: str = Depends(current_user),
+):
+    """Edit a draft's text.
+
+    The content goes in the JSON body. Long-form drafts (Medium / Dev.to,
+    600-1200 words) URL-encode well past the ~8-16 KB request-line limits of
+    uvicorn and common proxies, so the legacy ``?content=`` query param is
+    only kept for older clients.
+    """
+    new_content = body.content if body is not None else content
+    if new_content is None:
+        raise HTTPException(422, "content is required")
+    d = store.update_content(uid, draft_id, new_content)
     if not d:
         raise HTTPException(404, "Not found")
     return d

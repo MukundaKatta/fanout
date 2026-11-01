@@ -75,7 +75,7 @@ class Snippet:
 
 def _http_get(url: str, timeout: float = DEFAULT_TIMEOUT) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (URLs are validated upstream)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (scheme checked in fetch_rss; other URLs are built here)
         return resp.read()
 
 
@@ -262,8 +262,15 @@ def fetch_rss(feed_url: str, *, limit: int = PER_SOURCE_LIMIT) -> list[Snippet]:
 
     Tolerates both ``<rss><channel><item>`` and ``<feed><entry>`` shapes.
     """
+    # Feed URLs are user-supplied and ``urllib`` happily opens ``file://`` /
+    # ``ftp://`` too, which would let a caller read local files off the
+    # server into their snippet list. Only plain web feeds are allowed.
+    parsed = urllib.parse.urlparse(feed_url.strip())
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        log.warning("rss fetch skipped, unsupported URL: %r", feed_url)
+        return []
     try:
-        body = _http_get(feed_url)
+        body = _http_get(feed_url.strip())
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         log.warning("rss fetch failed (%s): %s", feed_url, e)
         return []

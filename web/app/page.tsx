@@ -121,6 +121,7 @@ export default function Home() {
   function statusStyle(status: Status) {
     const map: Record<Status, string> = {
       pending: "bg-white/5 text-white/50 ring-1 ring-white/10",
+      review_required: "bg-orange-500/15 text-orange-300 ring-1 ring-orange-400/20",
       queued: "bg-blue-500/15 text-blue-300 ring-1 ring-blue-400/20",
       scheduled: "bg-amber-500/15 text-amber-300 ring-1 ring-amber-400/20",
       posting: "bg-violet-500/15 text-violet-300 ring-1 ring-violet-400/20 animate-pulse",
