@@ -117,6 +117,7 @@ jobs:
                   assert os.path.exists(js), f"missing file: {js}"
           assert os.path.exists(m["background"]["service_worker"])
           print("OK — all referenced files exist")
+          PY
 
       - uses: actions/setup-node@v6
         with:
@@ -131,4 +132,3 @@ jobs:
 
       - name: Run outcome-extractor tests
         run: node tests/test_outcomes.mjs
-          PY
