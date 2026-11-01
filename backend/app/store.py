@@ -167,7 +167,10 @@ def set_review_checkpoint(user_id: str, draft_id: str, confidence: float, notes:
         d = s.get(Draft, draft_id)
         if not d or d.user_id != user_id:
             return None
-        current_plan = d.plan or {}
+        # Copy before mutating: the JSON column isn't mutation-tracked, so
+        # reassigning the *same* dict object is seen as "no change" and the
+        # review block would silently never reach the DB.
+        current_plan = dict(d.plan or {})
         adapter = channel_adapter_contract(d.platform)
         current_plan["review"] = {
             "confidence": round(confidence, 3),
@@ -185,8 +188,9 @@ def approve_review(user_id: str, draft_id: str, reviewer: str) -> dict | None:
         d = s.get(Draft, draft_id)
         if not d or d.user_id != user_id:
             return None
-        current_plan = d.plan or {}
-        review = current_plan.get("review", {})
+        # Copy (see set_review_checkpoint) so SQLAlchemy detects the change.
+        current_plan = dict(d.plan or {})
+        review = dict(current_plan.get("review") or {})
         review["approved_by"] = reviewer
         review["requires_review"] = False
         current_plan["review"] = review
