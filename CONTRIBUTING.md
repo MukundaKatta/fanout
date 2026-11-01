@@ -4,18 +4,13 @@ Thanks for helping out! Fanout is three pieces — a Python backend, a Next.js w
 
 ## Local dev
 
-See the README for the full bootstrap. Quick reminder:
-
 ```bash
-# backend
-cd backend && .venv/bin/uvicorn app.main:app --reload
-
-# web
-cd web && npm run dev
-
-# extension
-# chrome://extensions → Load unpacked → pick ./extension
+scripts/dev.sh     # Postgres (docker compose) + backend :8000 + web :3000, bootstraps deps/env files
 ```
+
+Then load the extension: `chrome://extensions` → Developer mode → Load unpacked → pick `./extension`.
+See the README's "Run locally" section for the manual steps, and [`CLAUDE.md`](CLAUDE.md) for an
+architecture/gotchas cheat sheet.
 
 ## Project layout
 
@@ -25,6 +20,9 @@ cd web && npm run dev
 | `backend/app/main.py`    | FastAPI routes |
 | `backend/app/store.py`   | Postgres CRUD scoped by `user_id` |
 | `backend/app/models.py`  | SQLAlchemy models |
+| `backend/app/research.py` | HN / Dev.to / Reddit / RSS signal fetchers + scoring |
+| `backend/app/operator.py` | Autonomous experiment picker + `OperatorRun` audit trail |
+| `backend/app/auth.py`    | Supabase JWT verification (dev-mode fallback when no secret) |
 | `extension/src/background.js`   | Service worker: polls `/queue`, dispatches to the right content script |
 | `extension/src/content-*.js`    | One per platform; drives that platform's composer |
 | `web/app/page.tsx`       | Composer + draft picker + sticky action bar |
@@ -41,14 +39,23 @@ cd web && npm run dev
 ## Branches & commits
 
 - Branch from `main`: `feature/<short-name>` or `fix/<short-name>`.
-- Commit messages: concise, imperative, scoped — `backend: add bluesky content rules`, `web: fix platform card hover`.
+- Commit messages / PR titles use [Conventional Commits](https://www.conventionalcommits.org/) — `feat(backend): add bluesky content rules`, `fix(web): platform card hover`. release-please reads them to bump the version (root, `web/package.json`, `extension/manifest.json`) and write `CHANGELOG.md`, so don't bump versions by hand.
 - Rebase on `main` before opening a PR.
 
 ## Pull requests
 
 - One focused change per PR.
 - Include a short "what / why / test plan" in the description.
-- CI must be green (typecheck + build).
+- CI must be green: repo-layout check, backend compile + import smoke test + pytest (3.11 & 3.12),
+  web `tsc --noEmit` + `next build`, extension manifest/syntax checks + outcome-extractor test.
+  Run the same locally:
+
+  ```bash
+  python3 scripts/check_repo_layout.py
+  cd backend && .venv/bin/python -m pytest tests/ -q
+  cd web && npx tsc --noEmit && npx next build
+  cd extension && for f in src/*.js; do node --check "$f"; done && node tests/test_outcomes.mjs
+  ```
 
 ## Code style
 
@@ -58,7 +65,8 @@ cd web && npm run dev
 
 ## Testing tips
 
-- Generate tests against Groq live (`.venv/bin/python /tmp/test_platforms.py` — see `docs/`).
+- Backend tests use in-memory SQLite and a dummy `GROQ_API_KEY` (see `backend/tests/conftest.py`) — no Postgres or network needed. LLM calls are faked by monkeypatching `SocialAgent._chat` / `.run` / `.variations`; HTTP-facing tests use FastAPI `TestClient`.
+- To exercise generation for real, set `GROQ_API_KEY` in `backend/.env` and `curl` `/variations` (see `docs/RESEARCH_LOOP.md`). Always send `-H 'content-type: application/json'` — FastAPI rejects form-encoded bodies with 422.
 - Extension debugging: `chrome://extensions` → Fanout → "Inspect views: service worker" for background logs, or open any target platform tab and open DevTools for content script logs.
 - Backend: `uvicorn --reload` picks up changes automatically.
 
