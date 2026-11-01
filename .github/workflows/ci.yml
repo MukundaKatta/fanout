@@ -131,4 +131,7 @@ jobs:
 
       - name: Run outcome-extractor tests
         run: node tests/test_outcomes.mjs
+
+      - name: Run background-worker tests
+        run: node tests/test_background.mjs
           PY

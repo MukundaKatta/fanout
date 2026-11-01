@@ -125,6 +125,33 @@ ANGLES = [
 ]
 
 
+def _as_text(value: object) -> str:
+    """Coerce an LLM JSON field to a stripped string (None → "")."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return ", ".join(_as_text(v) for v in value if v is not None)
+    return str(value).strip()
+
+
+def _as_points(value: object) -> list[str]:
+    """Coerce ``key_points`` to a list of strings.
+
+    ``list(value)`` on a string (which Llama returns now and then) explodes
+    it into single characters, so every character became a "key point".
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        lines = [ln.strip().lstrip("-*•").strip() for ln in value.splitlines()]
+        return [ln for ln in lines if ln] or ([value.strip()] if value.strip() else [])
+    if isinstance(value, list):
+        return [t for t in (_as_text(v) for v in value) if t]
+    return [_as_text(value)]
+
+
 @dataclass
 class Plan:
     audience: str
@@ -227,12 +254,14 @@ class SocialAgent:
                 f"Live signals:\n{research_context}"
             )
         data = json.loads(self._chat(system, f"Product:\n{product}", json_mode=True))
+        if not isinstance(data, dict):
+            raise ValueError("plan response was not a JSON object")
         return Plan(
-            audience=data["audience"],
-            angle=data["angle"],
-            key_points=list(data["key_points"]),
-            tone=data["tone"],
-            cta=data["cta"],
+            audience=_as_text(data.get("audience")),
+            angle=_as_text(data.get("angle")),
+            key_points=_as_points(data.get("key_points")),
+            tone=_as_text(data.get("tone")),
+            cta=_as_text(data.get("cta")),
         )
 
     def write(
@@ -329,11 +358,20 @@ class SocialAgent:
             )
         raw = self._chat(system, user, json_mode=True, temperature=0.9)
         data = json.loads(raw)
-        items = data.get("variations", [])
+        items = data.get("variations", []) if isinstance(data, dict) else []
+        if not isinstance(items, list):
+            items = []
         out = []
         for i, item in enumerate(items[:n]):
+            fallback_angle = chosen_angles[i] if i < len(chosen_angles) else "variation"
+            # The model sometimes returns bare strings instead of
+            # {angle, content} objects — keep them rather than 500ing.
+            if isinstance(item, str):
+                item = {"content": item}
+            elif not isinstance(item, dict):
+                continue
             out.append({
-                "angle": item.get("angle") or (chosen_angles[i] if i < len(chosen_angles) else "variation"),
-                "content": (item.get("content") or "").strip(),
+                "angle": _as_text(item.get("angle")) or fallback_angle,
+                "content": _as_text(item.get("content")),
             })
         return [v for v in out if v["content"]]

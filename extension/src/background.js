@@ -137,21 +137,26 @@ async function copyToTabClipboard(tabId, text) {
 async function waitForTabLoad(tabId, { timeout = 15000 } = {}) {
   return new Promise((resolve) => {
     let done = false;
+    let timer = null;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      if (timer) clearTimeout(timer);
+      resolve();
+    };
     const onUpdated = (id, info) => {
-      if (id === tabId && info.status === "complete" && !done) {
-        done = true;
-        chrome.tabs.onUpdated.removeListener(onUpdated);
-        resolve();
-      }
+      if (id === tabId && info.status === "complete") finish();
     };
     chrome.tabs.onUpdated.addListener(onUpdated);
-    setTimeout(() => {
-      if (!done) {
-        done = true;
-        chrome.tabs.onUpdated.removeListener(onUpdated);
-        resolve();
-      }
-    }, timeout);
+    timer = setTimeout(finish, timeout);
+    // A tab that is already loaded (an existing x.com tab reused by
+    // findOrOpenTab) never fires another "complete" event, so without this
+    // check every dispatch to it stalled for the full timeout.
+    chrome.tabs.get(tabId).then(
+      (tab) => { if (tab?.status === "complete") finish(); },
+      () => finish() // tab is gone — nothing to wait for
+    );
   });
 }
 
@@ -222,7 +227,22 @@ async function dispatch(item) {
   }
 }
 
-async function poll() {
+// Single-flight guard: the 30s alarm and the popup's "Poll now" both call
+// poll(). A dispatch cycle easily outlives 30s (tab load + SPA settle per
+// item), so without this two cycles drove the same composer tab at once and
+// interleaved their pastes/clicks.
+let pollInFlight = null;
+
+function poll() {
+  if (!pollInFlight) {
+    pollInFlight = pollOnce().finally(() => {
+      pollInFlight = null;
+    });
+  }
+  return pollInFlight;
+}
+
+async function pollOnce() {
   const { apiUrl, enabled, jwt } = await getConfig();
   if (!enabled) return;
   try {
