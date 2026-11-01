@@ -15,6 +15,9 @@ os.environ["DATABASE_URL"] = (
     "sqlite+pysqlite:///file:fanout_test?mode=memory&cache=shared&uri=true"
 )
 os.environ.setdefault("GROQ_API_KEY", "dummy-for-tests")
+# Tests exercise routes as the single dev user; auth now fails closed unless
+# dev mode is explicitly opted into.
+os.environ.setdefault("FANOUT_DEV_NO_AUTH", "1")
 
 import pytest  # noqa: E402
 

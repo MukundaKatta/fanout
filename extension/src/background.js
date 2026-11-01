@@ -1,5 +1,7 @@
 // Fanout background worker: polls backend for queued posts, dispatches to platform handlers.
 
+import { isAllowedPostUrl } from "./url-guard.js";
+
 const DEFAULT_API = "http://localhost:8000";
 const POLL_ALARM = "fanout-poll";
 // Outcome-puller is a separate alarm so it can run on a slower cadence
@@ -276,6 +278,10 @@ async function extractMetricsFromTab(tabId) {
 
 async function pullOutcomesForDraft(apiUrl, jwt, draft) {
   if (!draft?.post_url) return { draft_id: draft?.id, skipped: "no post_url" };
+  // post_url is backend/page supplied — never open + inject into an arbitrary URL.
+  if (!isAllowedPostUrl(draft.post_url)) {
+    return { draft_id: draft.id, skipped: "post_url not on an allowed platform host" };
+  }
   const tab = await chrome.tabs.create({ url: draft.post_url, active: false });
   let result = null;
   try {
@@ -345,7 +351,11 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === OUTCOMES_ALARM) pollOutcomes();
 });
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // Control messages are only accepted from this extension's own pages
+  // (the popup). Content scripts run inside third-party sites and have no
+  // reason to trigger polling/scraping, so messages from a tab are ignored.
+  if (sender?.id !== chrome.runtime.id || sender?.tab) return;
   if (msg?.type === "fanout:poll-now") {
     poll().then(() => sendResponse({ ok: true }));
     return true;
