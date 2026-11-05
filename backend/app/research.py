@@ -22,9 +22,11 @@ responsible for persistence and dedup.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import math
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -40,6 +42,8 @@ log = logging.getLogger(__name__)
 USER_AGENT = "fanout-research/0.1 (+https://github.com/MukundaKatta/fanout)"
 DEFAULT_TIMEOUT = 5.0  # seconds — keep the loop snappy; one slow source mustn't stall a run.
 PER_SOURCE_LIMIT = 10
+MAX_RESPONSE_BYTES = 5 * 1024 * 1024  # hard cap on any fetched body (feeds are tiny)
+ALLOWED_URL_SCHEMES = ("http", "https")
 RECENCY_HALF_LIFE_HOURS = 48.0  # popularity halves every 2 days
 
 
@@ -73,10 +77,105 @@ class Snippet:
 # ---------------------------------------------------------------------------
 
 
+class UnsafeURLError(ValueError):
+    """Raised when a URL is not safe to fetch server-side (SSRF guard)."""
+
+
+def is_http_url(url: str | None) -> bool:
+    """True when ``url`` is an absolute http(s) URL with a host.
+
+    Used to drop ``javascript:``/``data:``/``file:`` links coming back from
+    third-party sources before they are stored and later rendered as hrefs.
+    """
+    if not url or not isinstance(url, str):
+        return False
+    try:
+        parts = urllib.parse.urlsplit(url.strip())
+    except ValueError:
+        return False
+    return parts.scheme.lower() in ALLOWED_URL_SCHEMES and bool(parts.hostname)
+
+
+def _ip_is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_global and not ip.is_multicast
+
+
+def validate_feed_url(url: str) -> str:
+    """Cheap, DNS-free validation for user-supplied feed URLs.
+
+    Rejects non-http(s) schemes (``file://``, ``ftp://`` …), missing hosts,
+    embedded credentials, and literal private/loopback/link-local IPs or
+    ``localhost``. Hostnames are re-checked against their resolved addresses
+    at fetch time by :func:`_assert_public_host`.
+    """
+    if not is_http_url(url):
+        raise UnsafeURLError("Feed URL must be an absolute http(s) URL")
+    parts = urllib.parse.urlsplit(url.strip())
+    if parts.username or parts.password:
+        raise UnsafeURLError("Feed URL must not contain credentials")
+    host = (parts.hostname or "").rstrip(".").lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        raise UnsafeURLError("Feed URL must not point at localhost")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return url  # hostname — resolved and checked at fetch time
+    if not _ip_is_public(ip):
+        raise UnsafeURLError("Feed URL must not point at a private or reserved address")
+    return url
+
+
+def _assert_public_host(url: str) -> None:
+    """Resolve the URL's host and refuse if *any* address is non-public.
+
+    Note: there is still a small DNS-rebinding window between this check and
+    urllib's own resolution; see docs/SECURITY_REVIEW.md.
+    """
+    validate_feed_url(url)
+    parts = urllib.parse.urlsplit(url)
+    port = parts.port or (443 if parts.scheme.lower() == "https" else 80)
+    try:
+        infos = socket.getaddrinfo(parts.hostname, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as e:
+        raise urllib.error.URLError(f"DNS resolution failed: {e}") from e
+    for info in infos:
+        addr = info[4][0].split("%", 1)[0]  # strip IPv6 zone id
+        if not _ip_is_public(ipaddress.ip_address(addr)):
+            raise UnsafeURLError(f"Refusing to fetch {parts.hostname}: resolves to non-public address")
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-validate every redirect hop so a public URL can't 30x into the VPC."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _assert_public_host(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+# Only http/https handlers (+ our redirect guard): no file://, ftp://, data:.
+_OPENER = urllib.request.OpenerDirector()
+for _handler in (
+    urllib.request.ProxyHandler(),  # keep honouring HTTP(S)_PROXY like urlopen did
+    urllib.request.HTTPHandler(),
+    urllib.request.HTTPSHandler(),
+    _SafeRedirectHandler(),
+    urllib.request.UnknownHandler(),  # any other scheme → URLError("unknown url type")
+    urllib.request.HTTPErrorProcessor(),
+    urllib.request.HTTPDefaultErrorHandler(),
+):
+    _OPENER.add_handler(_handler)
+
+
 def _http_get(url: str, timeout: float = DEFAULT_TIMEOUT) -> bytes:
+    _assert_public_host(url)
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (URLs are validated upstream)
-        return resp.read()
+    with _OPENER.open(req, timeout=timeout) as resp:
+        body = resp.read(MAX_RESPONSE_BYTES + 1)
+    if len(body) > MAX_RESPONSE_BYTES:
+        raise urllib.error.URLError(f"response exceeds {MAX_RESPONSE_BYTES} bytes")
+    return body
 
 
 def _http_get_json(url: str, timeout: float = DEFAULT_TIMEOUT) -> dict:
@@ -146,7 +245,10 @@ def fetch_hn(query: str, *, limit: int = PER_SOURCE_LIMIT) -> list[Snippet]:
         title = hit.get("title") or hit.get("story_title")
         if not title:
             continue
-        story_url = hit.get("url") or f"https://news.ycombinator.com/item?id={hit.get('objectID')}"
+        story_url = hit.get("url")
+        if not is_http_url(story_url):
+            # Submitter-controlled field — never store javascript:/data: links.
+            story_url = f"https://news.ycombinator.com/item?id={hit.get('objectID')}"
         published_at = _parse_iso(hit.get("created_at"))
         points = float(hit.get("points") or 0)
         comments = float(hit.get("num_comments") or 0)
@@ -190,7 +292,7 @@ def fetch_devto(tag: str, *, limit: int = PER_SOURCE_LIMIT) -> list[Snippet]:
     for art in data[:limit]:
         title = art.get("title")
         article_url = art.get("url")
-        if not title or not article_url:
+        if not title or not is_http_url(article_url):
             continue
         reactions = float(art.get("public_reactions_count") or 0)
         comments = float(art.get("comments_count") or 0)
@@ -264,7 +366,7 @@ def fetch_rss(feed_url: str, *, limit: int = PER_SOURCE_LIMIT) -> list[Snippet]:
     """
     try:
         body = _http_get(feed_url)
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
+    except (urllib.error.URLError, TimeoutError, OSError, UnsafeURLError) as e:
         log.warning("rss fetch failed (%s): %s", feed_url, e)
         return []
 
@@ -279,7 +381,7 @@ def fetch_rss(feed_url: str, *, limit: int = PER_SOURCE_LIMIT) -> list[Snippet]:
     for entry in items[:limit]:
         title = (entry.get("title") or "").strip()
         link = entry.get("link") or ""
-        if not title or not link:
+        if not title or not is_http_url(link):
             continue
         published_at = entry.get("published_at")
         out.append(
