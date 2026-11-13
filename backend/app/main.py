@@ -567,6 +567,27 @@ def source_leaderboard(
     }
 
 
+@app.get("/analytics/engagement")
+def engagement_analytics(
+    days: int = 30,
+    bucket: str = "day",
+    platform: str | None = None,
+    uid: str = Depends(current_user),
+):
+    """Engagement rolled up per channel and over time.
+
+    Aggregates every outcome the extension has posted back via
+    ``/drafts/{id}/outcomes``. Cumulative snapshots are converted to gains so
+    repeated pulls of the same metric never double-count; see
+    ``store.engagement_analytics`` for the exact rule.
+    """
+    if days < 1 or days > 365:
+        raise HTTPException(422, "days must be 1..365")
+    if bucket not in store.ANALYTICS_BUCKETS:
+        raise HTTPException(422, f"bucket must be one of {sorted(store.ANALYTICS_BUCKETS)}")
+    return store.engagement_analytics(uid, days=days, bucket=bucket, platform=platform or None)
+
+
 # ---------------------------------------------------------------------------
 # Eva operator — autonomous draft cycle.
 # ---------------------------------------------------------------------------

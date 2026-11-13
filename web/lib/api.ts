@@ -164,6 +164,18 @@ export const api = {
       }>(`/drafts/${draftId}/outcomes`),
   },
 
+  // --- engagement analytics -------------------------------------------------
+  analytics: {
+    engagement: (opts?: { days?: number; bucket?: AnalyticsBucket; platform?: Platform }) => {
+      const qs = new URLSearchParams({
+        days: String(opts?.days ?? 30),
+        bucket: opts?.bucket ?? "day",
+      });
+      if (opts?.platform) qs.set("platform", opts.platform);
+      return request<EngagementAnalytics>(`/analytics/engagement?${qs}`);
+    },
+  },
+
   // --- operator (Eva) --------------------------------------------------------
   operator: {
     run: (input: {
@@ -332,6 +344,41 @@ export type SourceLeaderboardRow = {
   total: number;
   draft_count: number;
   top_url: string;
+};
+
+export type AnalyticsBucket = "day" | "week";
+
+// Metric maps are keyed by the open-set metric_kind string, like DraftOutcome.
+export type MetricTotals = Record<string, number>;
+
+export type ChannelEngagement = {
+  platform: Platform;
+  draft_count: number;
+  totals: MetricTotals;
+  per_draft: MetricTotals;
+  /** Sum of every kind except impressions (views) — what channels rank by. */
+  engagement: number;
+  top_draft: {
+    draft_id: string;
+    metric_kind: string;
+    metric_value: number;
+    post_url: string | null;
+  } | null;
+};
+
+export type EngagementAnalytics = {
+  window: {
+    days: number;
+    bucket: AnalyticsBucket;
+    since: string;
+    until: string;
+    platform: Platform | null;
+  };
+  metric_kinds: string[];
+  totals: MetricTotals;
+  draft_count: number;
+  channels: ChannelEngagement[];
+  timeseries: { bucket_start: string; totals: MetricTotals }[];
 };
 
 export type OperatorRunStatus = "pending" | "ok" | "failed";

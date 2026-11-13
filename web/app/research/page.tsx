@@ -387,9 +387,17 @@ export default function ResearchPage() {
           <ArrowLeft size={14} />
           Back to composer
         </Link>
-        <span className="text-[11px] font-mono text-white/40 uppercase tracking-wider">
-          Research workbench
-        </span>
+        <div className="flex items-center gap-4">
+          <Link
+            href="/analytics"
+            className="text-[11px] font-mono text-violet-300/80 hover:text-violet-200"
+          >
+            engagement analytics →
+          </Link>
+          <span className="text-[11px] font-mono text-white/40 uppercase tracking-wider">
+            Research workbench
+          </span>
+        </div>
       </header>
 
       <h1 className="text-3xl font-semibold tracking-tight mb-2">
