@@ -94,7 +94,7 @@ npm run dev
 
 ## Auth (optional)
 
-Runs in **dev mode** by default (single user, no login). To enable Supabase magic-link auth:
+Local dev runs in **single-user dev mode** (no login) when `SUPABASE_JWT_SECRET` is empty and `FANOUT_DEV_NO_AUTH=1` is set (the default in `backend/.env.example`). If neither is set, the API fails closed with 503 — never set `FANOUT_DEV_NO_AUTH` on a deployed backend. To enable Supabase magic-link auth:
 
 1. Create a free Supabase project
 2. Set `SUPABASE_JWT_SECRET` in `backend/.env`

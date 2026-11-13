@@ -15,13 +15,20 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from fastapi import Depends, FastAPI, Header, HTTPException  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from pydantic import BaseModel, Field  # noqa: E402
+from pydantic import BaseModel, Field, field_validator  # noqa: E402
 
 from app import operator, store  # noqa: E402
 from app.agent import PLATFORMS, SocialAgent  # noqa: E402
 from app.auth import current_user  # noqa: E402
 from app.db import init_db  # noqa: E402
-from app.research import ResearchRequest, format_for_prompt, run_research  # noqa: E402
+from app.research import (  # noqa: E402
+    ResearchRequest,
+    UnsafeURLError,
+    format_for_prompt,
+    is_http_url,
+    run_research,
+    validate_feed_url,
+)
 
 
 @asynccontextmanager
@@ -32,14 +39,43 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Fanout API", version="0.3.0", lifespan=lifespan)
 
-origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
+# Default to the local web dev server rather than "*". The API authenticates
+# with a bearer token (never cookies), so credentialed CORS is not needed —
+# keeping it off means a wildcard origin can never be reflected with
+# ``Access-Control-Allow-Credentials: true``.
+origins = [
+    o.strip()
+    for o in os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins or ["*"],
-    allow_credentials=True,
+    allow_origins=origins,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _check_feeds(feeds: list[str] | None) -> list[str] | None:
+    """Pydantic validator body: reject non-public / non-http(s) feed URLs (SSRF)."""
+    if feeds is None:
+        return feeds
+    for url in feeds:
+        try:
+            validate_feed_url(url)
+        except UnsafeURLError as e:
+            raise ValueError(f"{e}: {url[:200]}") from e
+    return feeds
+
+
+def _check_http_url(url: str | None) -> str | None:
+    """Pydantic validator body: only accept absolute http(s) URLs (no javascript:)."""
+    if url is None:
+        return url
+    if not is_http_url(url):
+        raise ValueError("must be an absolute http(s) URL")
+    return url
 
 
 class GenerateRequest(BaseModel):
@@ -63,6 +99,8 @@ class ResearchRunRequest(BaseModel):
     sources: list[str] = Field(default_factory=lambda: ["hn", "devto", "reddit", "rss"])
     per_source_limit: int = Field(default=10, ge=1, le=25)
 
+    _validate_feeds = field_validator("rss_feeds")(_check_feeds)
+
 
 class ResearchSuggestRequest(BaseModel):
     product: str = Field(..., min_length=10, max_length=8000)
@@ -77,6 +115,8 @@ class SubscriptionCreateRequest(BaseModel):
     interval_hours: int = Field(default=24, ge=1, le=24 * 7)
     active: bool = True
 
+    _validate_feeds = field_validator("rss_feeds")(_check_feeds)
+
 
 class SubscriptionUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
@@ -85,6 +125,8 @@ class SubscriptionUpdateRequest(BaseModel):
     sources: list[str] | None = None
     interval_hours: int | None = Field(default=None, ge=1, le=24 * 7)
     active: bool | None = None
+
+    _validate_feeds = field_validator("rss_feeds")(_check_feeds)
 
 
 class ScheduleRequest(BaseModel):
@@ -95,6 +137,8 @@ class PostedReport(BaseModel):
     draft_id: str
     post_url: str | None = None
     error: str | None = None
+
+    _validate_post_url = field_validator("post_url")(_check_http_url)
 
 
 class BulkQueueRequest(BaseModel):
@@ -117,6 +161,8 @@ class OutcomeReport(BaseModel):
     metric_value: int = Field(..., ge=0)
     post_url: str | None = None
     observed_at: datetime | None = None
+
+    _validate_post_url = field_validator("post_url")(_check_http_url)
 
 
 class OperatorRunRequest(BaseModel):
@@ -249,6 +295,8 @@ def research_list(
     limit: int = 50,
     uid: str = Depends(current_user),
 ):
+    if limit < 1 or limit > 200:
+        raise HTTPException(422, "limit must be 1..200")
     return store.list_snippets(uid, source=source, only_unused=only_unused, limit=limit)
 
 

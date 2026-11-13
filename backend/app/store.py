@@ -129,7 +129,10 @@ def get_draft_citations(user_id: str, draft_id: str) -> list[dict] | None:
         # the original list rather than the DB's natural order.
         rows = list(
             s.scalars(
-                select(ResearchSnippet).where(ResearchSnippet.id.in_(ids))
+                select(ResearchSnippet).where(
+                    ResearchSnippet.user_id == user_id,
+                    ResearchSnippet.id.in_(ids),
+                )
             )
         )
         by_id = {r.id: r for r in rows}
