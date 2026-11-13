@@ -36,7 +36,7 @@ This doc walks the loop end-to-end — what the pieces are, how to wire them, an
 | `research_subscriptions`    | Saved query + interval configs. `last_run_at` drives the tick scheduler.   |
 | `drafts.cited_snippet_ids`  | JSON list of snippet ids that fed each draft's prompt (closes the loop).   |
 
-Migrations live under `backend/migrations/00{2,3,4}_*.sql` — apply in order on a fresh database, or rely on SQLAlchemy `create_all` in dev.
+Migrations live under `backend/migrations/` (`001`–`007`) — apply in order with `psql` / the Supabase SQL editor on a fresh database, or rely on the SQLAlchemy `create_all` the backend runs at startup (that's all local dev needs).
 
 ## Endpoints
 
@@ -108,20 +108,13 @@ A minimum viable cron is one HTTP POST per minute. The endpoint is idempotent �
 
 ### GitHub Action (free)
 
-```yaml
-# .github/workflows/research-tick.yml
-name: research-tick
-on:
-  schedule:
-    - cron: "*/5 * * * *"   # every 5 min; tick is idempotent so this is safe
-jobs:
-  tick:
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          curl -fsS -X POST "${{ secrets.FANOUT_API_URL }}/research/tick/all" \
-            -H "X-Tick-Secret: ${{ secrets.RESEARCH_TICK_SECRET }}"
-```
+The repo already ships this as [`.github/workflows/research-tick.yml`](../.github/workflows/research-tick.yml)
+(hourly at :17, off by default). To turn it on:
+
+1. Set backend env var `RESEARCH_TICK_SECRET` to a strong random string
+2. Repo **Variable** `RESEARCH_TICK_ENABLED` = `true`
+3. Repo **Secret** `RESEARCH_TICK_URL` = `https://<your-backend>/research/tick/all` (the full endpoint URL)
+4. Repo **Secret** `RESEARCH_TICK_SECRET` = same value as step 1
 
 ### Vercel cron
 
@@ -167,10 +160,12 @@ Comments are weighted 1.5× points/upvotes — discussion is a stronger signal t
 ```bash
 # 1. seed
 curl -s -X POST http://localhost:8000/research/suggest \
+  -H 'content-type: application/json' \
   -d '{"product":"<your blurb>","count":5}' | jq '.queries'
 
 # 2. fetch (using the suggestions)
 curl -s -X POST http://localhost:8000/research \
+  -H 'content-type: application/json' \
   -d '{"queries":[...],"rss_feeds":[]}' | jq '.fetched'
 
 # 3. confirm snippets exist + are unused
@@ -178,6 +173,7 @@ curl -s 'http://localhost:8000/research?only_unused=true' | jq 'length'
 
 # 4. generate; check research_used > 0
 curl -s -X POST http://localhost:8000/variations \
+  -H 'content-type: application/json' \
   -d '{"product":"<blurb>","platform":"linkedin","use_research":true}' | jq '.research_used'
 
 # 5. confirm citations on the produced draft
@@ -187,13 +183,12 @@ curl -s 'http://localhost:8000/drafts/<id>/citations' | jq '.snippets | length'
 curl -s 'http://localhost:8000/research?only_unused=true' | jq 'length'
 ```
 
-If step 6 returns the same count as step 3, the citation marking didn't run — check the backend logs for the `mark_snippets_used` call site and confirm `RESEARCH_TICK_SECRET` isn't accidentally muting the path.
+If step 6 returns the same count as step 3, the citation marking didn't run — check the backend logs for the `mark_snippets_used` call site.
 
 ## Common gotchas
 
 - **Empty research after `/generate`.** The agent only consumes **unused** snippets. Run `/research` again or wait for the next subscription tick.
-- **`UnknownPricingError` is a different module.** That's `agentbudget`. Fanout's research loop has no per-source pricing.
-- **Reddit 429s under the cron.** Reddit rate-limits unauthed requests. The configured User-Agent (`fanout-research/0.1`) helps, but if you hit limits, lower your subscription `interval_hours` or shrink the query list.
+- **Reddit 429s under the cron.** Reddit rate-limits unauthed requests. The configured User-Agent (`fanout-research/0.1`) helps, but if you hit limits, raise your subscription `interval_hours` (tick less often) or shrink the query list.
 - **Citations look stale.** `cited_snippet_ids` is the source of truth on each draft. The `used_in_draft_id` field on snippets is a back-compat shortcut — if you need a definitive "what fed this draft?" answer, hit `/drafts/{id}/citations`.
 
 ## Outcome feedback (closing the loop)

@@ -12,7 +12,7 @@ Agentic content studio for indie shippers. One product description → 5 distinc
 
 ```
                        ┌────────────────────────────────────────────┐
-                       │           web (Next.js 15 + Tailwind)       │
+                       │           web (Next.js 16 + Tailwind)       │
                        │   /  composer  ·  /research  ·  /operator   │
                        └─────────────────┬──────────────────────────┘
                                          │ REST
@@ -70,26 +70,60 @@ on live signals alone. They compose, they don't depend on each other.
 
 ## Run locally
 
-Prereqs: Node 22+, Python 3.11+, Postgres, a free [Groq API key](https://console.groq.com/keys).
+Prereqs: Node 22+, Python 3.11+, Docker (for Postgres — or bring your own),
+and a free [Groq API key](https://console.groq.com/keys).
+
+**One command:**
 
 ```bash
+scripts/dev.sh
+# backend → http://localhost:8000 (OpenAPI docs at /docs)
+# web     → http://localhost:3000
+```
+
+It creates `backend/.venv`, installs backend + web deps, copies
+`backend/.env` / `web/.env.local` from their examples if missing, starts
+Postgres via `docker compose`, then runs uvicorn (`--reload`) and `next dev`
+side by side. Re-runs are fast (deps reinstall only when lockfiles change).
+Put your `GROQ_API_KEY` in `backend/.env` — without it the app still starts,
+but generation endpoints fail. `scripts/dev.sh --help` for flags
+(`--no-db` to use your own Postgres, `--setup` to bootstrap only).
+
+**Manually** (same steps, one terminal each):
+
+```bash
+# 0. database
+docker compose up -d db       # or: createdb fanout on a local Postgres
+
 # 1. backend
 cd backend
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-cp .env.example .env   # paste your GROQ_API_KEY
-createdb fanout
+.venv/bin/pip install -r requirements-dev.txt
+cp .env.example .env          # paste your GROQ_API_KEY; adjust DATABASE_URL if not using compose
 .venv/bin/uvicorn app.main:app --reload
 
-# 2. web (in a second terminal)
+# 2. web
 cd web
-npm install
-cp .env.local.example .env.local   # for Supabase auth, otherwise leave blank
+npm ci
+cp .env.local.example .env.local   # leave the Supabase vars empty for dev mode
 npm run dev
 # open http://localhost:3000
 
 # 3. extension (one-time)
 # Chrome → chrome://extensions → Developer mode → Load unpacked → pick ./extension
+```
+
+Tables are created automatically on backend startup; `backend/migrations/`
+is only needed for Supabase / pre-existing databases. Every env var is
+documented in [`backend/.env.example`](backend/.env.example) and
+[`web/.env.local.example`](web/.env.local.example).
+
+**Tests:**
+
+```bash
+cd backend && .venv/bin/python -m pytest tests/ -q     # sqlite in-memory, no Postgres/Groq needed
+cd web && npx tsc --noEmit && npx next build
+node extension/tests/test_outcomes.mjs
 ```
 
 ## Auth (optional)
@@ -119,13 +153,16 @@ extension/    Chrome MV3 extension that posts via your browser session
   src/outcomes.js       engagement-metric extractor (aria-label + visible-text)
   src/content-*.js      one per platform
   tests/test_outcomes.mjs   pure-Node smoke test of the extractor
-web/          Next.js 15 + Tailwind + Supabase
+web/          Next.js 16 + Tailwind + Supabase
   app/page.tsx          composer + draft picker + sticky action bar
   app/research/         research workbench + research/operator subscriptions
   app/operator/         OperatorRun history timeline
   lib/api.ts            typed client for every endpoint above
   components/           Logo, Marquee, Spotlight, Typewriter, CitationsPill
 docs/         deep-dive guides — start with RESEARCH_LOOP.md and OPERATOR.md
+scripts/      dev.sh (one-command local stack), check_repo_layout.py (CI)
+docker-compose.yml  local Postgres for dev
+CLAUDE.md     architecture, conventions and gotchas cheat sheet
 ```
 
 ## Research loop
@@ -210,6 +247,7 @@ curl -X POST http://localhost:8000/operator/run \
 
 # save it as a recurring cycle on the workbench
 curl -X POST http://localhost:8000/operator/subscriptions \
+  -H 'content-type: application/json' \
   -d '{"name":"daily-social","product":"<blurb>","platforms":["x","linkedin"]}'
 ```
 

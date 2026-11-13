@@ -1,0 +1,32 @@
+# Local development services for Fanout.
+#
+# Only Postgres runs in Docker — the backend (uvicorn --reload) and web
+# (next dev) run natively for fast hot reload. `scripts/dev.sh` starts this
+# automatically; you can also run it by hand:
+#
+#   docker compose up -d db
+#
+# Credentials match the backend's default DATABASE_URL
+# (postgresql+psycopg://postgres:postgres@localhost:5432/fanout).
+# Tables are created by the backend on startup (SQLAlchemy create_all), so
+# no migration step is needed for local dev.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: fanout
+    ports:
+      - "${FANOUT_DB_PORT:-5432}:5432"
+    volumes:
+      - fanout-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d fanout"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  fanout-pg:

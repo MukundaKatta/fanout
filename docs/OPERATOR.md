@@ -97,9 +97,11 @@ weight_by_leaderboard, leaderboard_metric, snippet_limit, active)`.
 ```bash
 # CRUD
 curl -s -X POST  http://localhost:8000/operator/subscriptions \
+     -H 'content-type: application/json' \
      -d '{"name":"daily-x-linkedin","product":"<blurb>","platforms":["x","linkedin"]}'
 curl -s          http://localhost:8000/operator/subscriptions
-curl -s -X PATCH http://localhost:8000/operator/subscriptions/<id> -d '{"active":false}'
+curl -s -X PATCH http://localhost:8000/operator/subscriptions/<id> \
+     -H 'content-type: application/json' -d '{"active":false}'
 curl -s -X DELETE http://localhost:8000/operator/subscriptions/<id>
 
 # Manual fire — runs every sub belonging to the authed user that is due now
